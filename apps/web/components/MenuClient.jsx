@@ -1,13 +1,12 @@
 'use client';
-import { useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import Dish3D from './Dish3D';
+import DishModal from './DishModal';
 
-function DishCard({ dish, currency }) {
-  const [flipped, setFlipped] = useState(false);
-  const toggle = () => setFlipped((f) => !f);
+function DishCard({ dish, currency, onOpen }) {
   return (
     <article className="card">
-      <Dish3D dish={dish} currency={currency} flipped={flipped} onToggle={toggle} />
+      <Dish3D dish={dish} currency={currency} look={dish.look} onOpen={onOpen} />
       <div className="meta">
         <span className={`dot ${dish.veg ? 'veg' : 'nonveg'}`} title={dish.veg ? 'Vegetarian' : 'Non-vegetarian'} />
         {dish.special && <span className="badge">Chef&apos;s special</span>}
@@ -16,7 +15,7 @@ function DishCard({ dish, currency }) {
       <p>{dish.description}</p>
       <div className="row">
         <span className="price">{currency}{dish.price}</span>
-        <button onClick={toggle}>Flip</button>
+        <button onClick={onOpen}>View in 3D</button>
       </div>
     </article>
   );
@@ -26,6 +25,8 @@ export default function MenuClient({ menu }) {
   const { settings, categories, dishes } = menu;
   const [cat, setCat] = useState('All');
   const [vegOnly, setVegOnly] = useState(false);
+  const [open, setOpen] = useState(null);
+  const close = useCallback(() => setOpen(null), []);
   const shown = useMemo(
     () => dishes.filter((d) => (cat === 'All' || d.category === cat) && (!vegOnly || d.veg)),
     [dishes, cat, vegOnly]
@@ -36,7 +37,7 @@ export default function MenuClient({ menu }) {
       <header>
         <h1>{settings.name}</h1>
         {settings.tagline && <p>{settings.tagline}</p>}
-        <p className="hint">Touch a dish to bring it to the front. Tap to flip it.</p>
+        <p className="hint">Tap a dish to explore it in 3D: turn it, tilt it and zoom in.</p>
       </header>
 
       <div className="filters">
@@ -52,9 +53,10 @@ export default function MenuClient({ menu }) {
         <p className="empty">{dishes.length ? 'No dishes match these filters.' : 'The menu is being prepared. Please check back soon.'}</p>
       ) : (
         <div className="grid">
-          {shown.map((d) => <DishCard key={d._id} dish={d} currency={settings.currency} />)}
+          {shown.map((d) => <DishCard key={d._id} dish={d} currency={settings.currency} onOpen={() => setOpen(d)} />)}
         </div>
       )}
+      {open && <DishModal dish={open} currency={settings.currency} onClose={close} />}
     </main>
   );
 }

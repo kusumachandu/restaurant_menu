@@ -1,17 +1,20 @@
 'use client';
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '@/lib/client';
+import LookEditor from './LookEditor';
 
-const EMPTY = { name: '', description: '', price: '', category: 'Mains', veg: false, special: false, available: true, imageId: null };
+const EMPTY = { name: '', description: '', price: '', category: 'Mains', veg: false, special: false, available: true, imageId: null, look: null };
 
 export default function DishManager() {
   const [dishes, setDishes] = useState([]);
   const [edit, setEdit] = useState(null);
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
+  const [currency, setCurrency] = useState('₹');
 
   const load = useCallback(() => api('/admin/dishes').then(setDishes).catch((e) => setErr(e.message)), []);
   useEffect(() => { load(); }, [load]);
+  useEffect(() => { api('/admin/settings').then((s) => setCurrency(s.currency)).catch(() => {}); }, []);
   const categories = [...new Set(dishes.map((d) => d.category))];
 
   async function save(e) {
@@ -74,7 +77,7 @@ export default function DishManager() {
         <label>Photo (best: a top-down photo of the dish)
           <input type="file" accept="image/*" onChange={upload} />
         </label>
-        {edit.imageId && <img className="preview" src={`/api/images/${edit.imageId}`} alt="Dish preview" />}
+        {edit.imageId && <LookEditor dish={{ ...edit, name: edit.name || 'Dish name', price: edit.price || 0 }} currency={currency} look={edit.look} onChange={(look) => setEdit((d) => ({ ...d, look }))} />}
         {err && <p className="error" role="alert">{err}</p>}
         <div className="actions">
           <button disabled={busy}>{busy ? 'Saving…' : 'Save dish'}</button>

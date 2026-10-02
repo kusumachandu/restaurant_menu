@@ -1,6 +1,7 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
 import { buildMaps, cropSquare } from '@/lib/relief';
+import { resolveLook } from '@/lib/look';
 
 const TAU = Math.PI * 2;
 
@@ -32,16 +33,29 @@ function backCanvas(name, price) {
   return c;
 }
 
-/**
- * A dish plate that turns in 3D. The WebGL scene is created only while the card is
- * on screen and destroyed when it scrolls away, so long menus stay fast.
- */
-export default function Dish3D({ dish, currency, flipped, onToggle }) {
-  const box = useRef(null);
-  const flipRef = useRef(false);
-  const [failed, setFailed] = useState(!dish.imageId);
+const RAD = Math.PI / 180;
+const COOL = [0.87, 0.92, 1];
+const WARM = [1, 0.85, 0.66];
 
-  useEffect(() => { flipRef.current = flipped; }, [flipped]);
+/**
+ * A dish plate in 3D. Two modes:
+ *  - "card":   small, gently spinning, tilts toward the pointer; click opens the viewer.
+ *  - "viewer": drag to turn it to any angle, pinch/scroll to zoom. Used in the menu's
+ *              full-screen viewer and in the admin preview.
+ * `look` (lighting settings) is read every frame, so sliders update live without
+ * rebuilding the scene. The WebGL scene exists only while the element is on screen.
+ */
+export default function Dish3D({ dish, currency, look, mode = 'card', onOpen, apiRef }) {
+  const box = useRef(null);
+  const lookRef = useRef(resolveLook(look));
+  const labelRef = useRef({ name: dish.name, price: `${currency}${dish.price}` });
+  const liveApi = useRef(null);
+  const [failed, setFailed] = useState(!dish.imageId);
+  const viewer = mode === 'viewer';
+
+  lookRef.current = resolveLook(look);
+  labelRef.current = { name: dish.name, price: `${currency}${dish.price}` };
+  useEffect(() => { liveApi.current?.setBack(); }, [dish.name, dish.price, currency]);
 
   useEffect(() => {
     if (failed || !box.current) return undefined;
@@ -69,9 +83,9 @@ export default function Dish3D({ dish, currency, flipped, onToggle }) {
       const scene = new THREE.Scene();
       const cam = new THREE.PerspectiveCamera(30, 1, 0.1, 50);
       cam.position.z = 5.6;
-      scene.add(new THREE.HemisphereLight(0xffffff, 0x998877, 1.1));
+      const hemi = new THREE.HemisphereLight(0xffffff, 0x998877, 1.1);
+      scene.add(hemi);
       const sun = new THREE.DirectionalLight(0xfff0dc, 1.6);
-      sun.position.set(-3, 4, 6);
       scene.add(sun);
       const group = new THREE.Group();
       scene.add(group);
@@ -91,30 +105,36 @@ export default function Dish3D({ dish, currency, flipped, onToggle }) {
       const photo = new THREE.CanvasTexture(square);
       photo.colorSpace = THREE.SRGBColorSpace;
       photo.anisotropy = 4;
-      const front = new THREE.Mesh(
-        new THREE.PlaneGeometry(1.84, 1.84, 110, 110),
-        new THREE.MeshStandardMaterial({
-          map: photo,
-          emissive: 0xffffff,
-          emissiveMap: photo,
-          emissiveIntensity: 0.6,
-          displacementMap: new THREE.CanvasTexture(maps.height),
-          displacementScale: 0.16,
-          normalMap: new THREE.CanvasTexture(maps.normal),
-          alphaMap: new THREE.CanvasTexture(mask),
-          alphaTest: 0.5,
-          roughness: 0.65,
-        })
-      );
+      const frontMat = new THREE.MeshStandardMaterial({
+        map: photo,
+        emissive: 0xffffff,
+        emissiveMap: photo,
+        emissiveIntensity: 0.6,
+        displacementMap: new THREE.CanvasTexture(maps.height),
+        displacementScale: 0.16,
+        normalMap: new THREE.CanvasTexture(maps.normal),
+        alphaMap: new THREE.CanvasTexture(mask),
+        alphaTest: 0.5,
+        roughness: 0.65,
+      });
+      const front = new THREE.Mesh(new THREE.PlaneGeometry(1.84, 1.84, 110, 110), frontMat);
       front.position.z = 0.081;
       group.add(front);
 
-      const backTex = new THREE.CanvasTexture(backCanvas(dish.name, `${currency}${dish.price}`));
-      backTex.colorSpace = THREE.SRGBColorSpace;
-      const back = new THREE.Mesh(new THREE.CircleGeometry(0.95, 64), new THREE.MeshBasicMaterial({ map: backTex }));
+      const backMat = new THREE.MeshBasicMaterial();
+      const back = new THREE.Mesh(new THREE.CircleGeometry(0.95, 64), backMat);
       back.rotation.y = Math.PI;
       back.position.z = -0.082;
       group.add(back);
+      const setBack = () => {
+        backMat.map?.dispose();
+        const { name, price } = labelRef.current;
+        backMat.map = new THREE.CanvasTexture(backCanvas(name, price));
+        backMat.map.colorSpace = THREE.SRGBColorSpace;
+        backMat.needsUpdate = true;
+      };
+      setBack();
+      liveApi.current = { setBack };
 
       const ring = new THREE.Mesh(
         new THREE.TorusGeometry(1, 0.022, 12, 96),
@@ -123,7 +143,15 @@ export default function Dish3D({ dish, currency, flipped, onToggle }) {
       ring.position.z = 0.08;
       group.add(ring);
 
-      const s = { a: Math.random() * 0.5, hover: false, px: 0, py: 0 };
+      const s = {
+        a: Math.random() * 0.5, hover: false, px: 0, py: 0,               // card mode
+        rx: 0, ry: 0, vx: 0, vy: 0, zoom: 1, auto: !reduce, target: null, // viewer mode
+      };
+      const ptrs = new Map();
+      let pinch = 0;
+      const halt = () => { s.auto = false; s.target = null; };
+
+      // card: tilt toward the pointer
       const onMove = (e) => {
         const r = el.getBoundingClientRect();
         s.px = ((e.clientX - r.left) / r.width) * 2 - 1;
@@ -131,13 +159,83 @@ export default function Dish3D({ dish, currency, flipped, onToggle }) {
         s.hover = true;
       };
       const onLeave = () => { s.hover = false; s.px = s.py = 0; };
-      el.addEventListener('pointermove', onMove);
-      el.addEventListener('pointerleave', onLeave);
+
+      // viewer: drag to turn to any angle, pinch or scroll to zoom
+      const clampZoom = (z) => Math.min(2.6, Math.max(0.6, z));
+      const dist = () => { const [a, b] = [...ptrs.values()]; return Math.hypot(a.x - b.x, a.y - b.y); };
+      const onDown = (e) => {
+        el.setPointerCapture?.(e.pointerId);
+        ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+        halt();
+        s.vx = s.vy = 0;
+        if (ptrs.size === 2) pinch = dist();
+      };
+      const onDrag = (e) => {
+        const p = ptrs.get(e.pointerId);
+        if (!p) return;
+        const dx = e.clientX - p.x, dy = e.clientY - p.y;
+        p.x = e.clientX; p.y = e.clientY;
+        if (ptrs.size === 2) {
+          const d = dist();
+          if (pinch) s.zoom = clampZoom(s.zoom * (d / pinch));
+          pinch = d;
+        } else {
+          s.vy = dx * 0.012; s.vx = dy * 0.012;
+          s.ry += s.vy; s.rx += s.vx;
+        }
+      };
+      const onUp = (e) => { ptrs.delete(e.pointerId); pinch = 0; };
+      const onWheel = (e) => { e.preventDefault(); halt(); s.zoom = clampZoom(s.zoom * Math.exp(-e.deltaY * 0.0015)); };
+      const onKey = (e) => {
+        const step = { ArrowLeft: [0, -0.2], ArrowRight: [0, 0.2], ArrowUp: [-0.2, 0], ArrowDown: [0.2, 0] }[e.key];
+        if (step) { e.preventDefault(); halt(); s.rx += step[0]; s.ry += step[1]; }
+        else if (e.key === '+' || e.key === '=') { halt(); s.zoom = clampZoom(s.zoom * 1.15); }
+        else if (e.key === '-') { halt(); s.zoom = clampZoom(s.zoom / 1.15); }
+      };
+      if (viewer) {
+        el.addEventListener('pointerdown', onDown);
+        el.addEventListener('pointermove', onDrag);
+        el.addEventListener('pointerup', onUp);
+        el.addEventListener('pointercancel', onUp);
+        el.addEventListener('wheel', onWheel, { passive: false });
+        el.addEventListener('keydown', onKey);
+        if (apiRef) {
+          apiRef.current = {
+            reset: () => {
+              s.auto = false;
+              s.vx = s.vy = 0;
+              s.target = { rx: Math.round(s.rx / TAU) * TAU, ry: Math.round(s.ry / TAU) * TAU, zoom: 1 };
+            },
+          };
+        }
+      } else {
+        el.addEventListener('pointermove', onMove);
+        el.addEventListener('pointerleave', onLeave);
+      }
 
       const resize = () => { const w = el.clientWidth; if (w) renderer.setSize(w, w, false); };
       const ro = new ResizeObserver(resize);
       ro.observe(el);
       resize();
+
+      const tint = new THREE.Color();
+      const applyLook = () => {
+        const L = lookRef.current;
+        const b = L.brightness;
+        hemi.intensity = L.ambient * b;
+        sun.intensity = L.key * b;
+        sun.color.copy(tint.setRGB(
+          COOL[0] + (WARM[0] - COOL[0]) * L.warmth,
+          COOL[1] + (WARM[1] - COOL[1]) * L.warmth,
+          COOL[2] + (WARM[2] - COOL[2]) * L.warmth
+        ));
+        const az = L.azimuth * RAD, elev = L.elevation * RAD;
+        sun.position.set(8 * Math.cos(elev) * Math.sin(az), 8 * Math.sin(elev), 8 * Math.cos(elev) * Math.cos(az));
+        frontMat.emissiveIntensity = L.glow * b;
+        frontMat.displacementScale = L.depth;
+        frontMat.roughness = L.shine;
+        return L;
+      };
 
       let last = performance.now();
       let raf = 0;
@@ -145,14 +243,34 @@ export default function Dish3D({ dish, currency, flipped, onToggle }) {
         raf = requestAnimationFrame(loop);
         const dt = Math.min(0.05, (now - last) / 1000);
         last = now;
-        const flip = flipRef.current;
-        if (flip) s.a += (Math.round((s.a - Math.PI) / TAU) * TAU + Math.PI - s.a) * 0.1;
-        else if (s.hover || reduce) s.a += (Math.round(s.a / TAU) * TAU - s.a) * 0.12;
-        else s.a += dt * 0.6;
-        // dwell on the front, whip past the back
-        const rot = s.a - (flip || s.hover || reduce ? 0 : 0.9 * Math.sin(s.a));
-        group.rotation.y += (rot + (s.hover && !flip ? s.px * 0.4 : 0) - group.rotation.y) * 0.25;
-        group.rotation.x += ((s.hover ? s.py * 0.25 : 0) - group.rotation.x) * 0.12;
+        const L = applyLook();
+        if (viewer) {
+          if (ptrs.size === 0) {
+            if (s.target) {
+              s.rx += (s.target.rx - s.rx) * 0.12;
+              s.ry += (s.target.ry - s.ry) * 0.12;
+              s.zoom += (s.target.zoom - s.zoom) * 0.12;
+              if (Math.abs(s.target.ry - s.ry) < 0.002 && Math.abs(s.target.rx - s.rx) < 0.002) {
+                s.target = null;
+                s.auto = !reduce;
+              }
+            } else if (s.auto) {
+              s.ry += dt * L.spin;
+            } else {
+              s.rx += s.vx; s.ry += s.vy;
+              s.vx *= 0.94; s.vy *= 0.94;
+            }
+          }
+          group.rotation.set(s.rx, s.ry, 0);
+          cam.position.z = 5.6 / s.zoom;
+        } else {
+          if (s.hover || reduce) s.a += (Math.round(s.a / TAU) * TAU - s.a) * 0.12;
+          else s.a += dt * L.spin;
+          // dwell on the front, whip past the back
+          const rot = s.a - (s.hover || reduce ? 0 : 0.9 * Math.sin(s.a));
+          group.rotation.y += (rot + (s.hover ? s.px * 0.4 : 0) - group.rotation.y) * 0.25;
+          group.rotation.x += ((s.hover ? s.py * 0.25 : 0) - group.rotation.x) * 0.12;
+        }
         renderer.render(scene, cam);
       };
       raf = requestAnimationFrame(loop);
@@ -160,8 +278,15 @@ export default function Dish3D({ dish, currency, flipped, onToggle }) {
       live = () => {
         cancelAnimationFrame(raf);
         ro.disconnect();
-        el.removeEventListener('pointermove', onMove);
+        el.removeEventListener('pointermove', viewer ? onDrag : onMove);
         el.removeEventListener('pointerleave', onLeave);
+        el.removeEventListener('pointerdown', onDown);
+        el.removeEventListener('pointerup', onUp);
+        el.removeEventListener('pointercancel', onUp);
+        el.removeEventListener('wheel', onWheel);
+        el.removeEventListener('keydown', onKey);
+        if (apiRef) apiRef.current = null;
+        liveApi.current = null;
         scene.traverse((o) => {
           o.geometry?.dispose();
           const m = o.material;
@@ -184,23 +309,37 @@ export default function Dish3D({ dish, currency, flipped, onToggle }) {
     const io = new IntersectionObserver(([e]) => (e.isIntersecting ? start() : stop()), { rootMargin: '150px' });
     io.observe(el);
     return () => { io.disconnect(); stop(); };
-  }, [dish.imageId, dish.name, dish.price, currency, failed]);
+  }, [dish.imageId, failed, viewer, apiRef]);
 
+  const fallback = failed && (dish.imageId
+    ? <img className="stage-img" src={`/api/images/${dish.imageId}`} alt={dish.name} />
+    : <div className="stage-empty" aria-hidden="true">🍽</div>);
+
+  if (viewer) {
+    return (
+      <div
+        ref={box}
+        className="stage viewer"
+        tabIndex={0}
+        role="group"
+        aria-label={`3D view of ${dish.name}. Drag or use arrow keys to rotate, plus and minus to zoom.`}
+      >
+        {fallback}
+      </div>
+    );
+  }
   return (
     <div
       ref={box}
       className="stage"
       role="button"
       tabIndex={0}
-      aria-label={`Flip ${dish.name}`}
-      aria-pressed={flipped}
-      onClick={onToggle}
-      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onToggle(); } }}
+      aria-label={`View ${dish.name} in 3D`}
+      onClick={onOpen}
+      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen?.(); } }}
     >
-      {failed && (dish.imageId
-        ? <img className="stage-img" src={`/api/images/${dish.imageId}`} alt={dish.name} />
-        : <div className="stage-empty" aria-hidden="true">🍽</div>)}
-      <small>Tap to flip</small>
+      {fallback}
+      <small>Tap to explore in 3D</small>
     </div>
   );
 }
