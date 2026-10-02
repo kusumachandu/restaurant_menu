@@ -33,6 +33,7 @@ export const Dish = model(
       available: { type: Boolean, default: true },
       imageId: { type: Schema.Types.ObjectId, ref: 'Image', default: null },
       sortOrder: { type: Number, default: 0 },
+      look: { type: Schema.Types.Mixed, default: null }, // lighting settings, see routes.js
     },
     { timestamps: true }
   )

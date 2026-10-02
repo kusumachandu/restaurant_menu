@@ -8,7 +8,7 @@ apps/
   web/   Next.js 14 (App Router): public 3D menu + owner admin panel
 ```
 
-Customers scan a QR code and see each dish as a plate that turns in 3D (three.js).
+Customers scan a QR code and see each dish as a plate that turns in 3D (three.js). Tapping a dish opens a viewer to rotate, tilt and zoom it; admins tune lighting per dish with a live preview.
 The owner logs in at `/admin` to add dishes, upload photos, mark items sold out, edit
 the restaurant name and download the table QR code.
 

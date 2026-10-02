@@ -13,6 +13,21 @@ const router = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 8 * 1024 * 1024 } });
 const objectId = z.string().regex(/^[a-f\d]{24}$/i);
 
+// Lighting/appearance a dish is shown with. Ranges mirror LOOK_FIELDS in apps/web/lib/look.js.
+const num = (min, max) => z.coerce.number().min(min).max(max).optional();
+const lookSchema = z.object({
+  brightness: num(0.2, 2.5),
+  key: num(0, 4),
+  ambient: num(0, 3),
+  azimuth: num(-180, 180),
+  elevation: num(-10, 90),
+  warmth: num(0, 1),
+  glow: num(0, 1.5),
+  depth: num(0, 0.4),
+  shine: num(0.2, 1),
+  spin: num(0, 2),
+});
+
 const dishSchema = z.object({
   name: z.string().trim().min(1).max(120),
   description: z.string().max(600).default(''),
@@ -23,6 +38,7 @@ const dishSchema = z.object({
   available: z.boolean().default(true),
   imageId: objectId.nullable().optional(),
   sortOrder: z.coerce.number().default(0),
+  look: lookSchema.nullable().optional(),
 });
 const settingsSchema = z.object({
   name: z.string().trim().min(1).max(80),
