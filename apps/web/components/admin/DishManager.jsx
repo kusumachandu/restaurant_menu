@@ -62,6 +62,35 @@ export default function DishManager() {
     load();
   }
 
+  // Opens a print-ready menu; choose "Save as PDF" in the print dialog.
+  function exportPdf() {
+    const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    const w = window.open('', '_blank');
+    if (!w) { setErr('Allow pop-ups to export the PDF.'); return; }
+    const rows = categories.map((cat) => `
+      <h2>${esc(cat)}</h2>
+      ${dishes.filter((d) => d.category === cat).map((d) => `
+        <div class="dish${d.available ? '' : ' off'}">
+          ${d.imageId ? `<img src="${location.origin}/api/images/${esc(d.imageId)}" alt="">` : '<div class="ph"></div>'}
+          <div class="info">
+            <b>${esc(d.name)}</b>${d.veg ? ' <span class="tag">Veg</span>' : ''}${d.special ? ' <span class="tag">Special</span>' : ''}${d.available ? '' : ' <span class="tag">Sold out</span>'}
+            ${d.description ? `<p>${esc(d.description)}</p>` : ''}
+          </div>
+          <div class="price">${esc(currency)}${esc(d.price)}</div>
+        </div>`).join('')}`).join('');
+    w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Menu dishes</title><style>
+      body{font-family:Arial,sans-serif;color:#222;margin:24px}
+      h1{margin:0 0 4px}h2{border-bottom:2px solid #ddd;padding-bottom:4px;margin:24px 0 8px}
+      .dish{display:flex;gap:12px;align-items:center;padding:8px 0;border-bottom:1px solid #eee;break-inside:avoid}
+      .dish img,.ph{width:56px;height:56px;border-radius:8px;object-fit:cover;background:#eee;flex:none}
+      .info{flex:1}.info p{margin:2px 0 0;font-size:12px;color:#666}
+      .price{font-weight:bold}.off{opacity:.5}
+      .tag{font-size:11px;background:#eee;border-radius:4px;padding:1px 5px;margin-left:4px}
+    </style></head><body><h1>Dishes</h1><div>${dishes.length} items · ${new Date().toLocaleDateString()}</div>${rows}</body></html>`);
+    w.document.close();
+    w.addEventListener('load', () => { w.focus(); w.print(); });
+  }
+
   if (edit) {
     return (
       <Stack as="form" onSubmit={save} spacing="14px" mt={4}>
@@ -108,7 +137,10 @@ export default function DishManager() {
     <Box>
       <Flex justify="space-between" align="center" gap={3} wrap="wrap" mb="6px">
         <Heading as="h2" fontSize="24px">{dishes.length} dishes</Heading>
-        <Button onClick={() => setEdit({ ...EMPTY })}>+ Add dish</Button>
+        <Flex gap={2} wrap="wrap">
+          <Button variant="outline" onClick={exportPdf} isDisabled={!dishes.length}>Export PDF</Button>
+          <Button onClick={() => setEdit({ ...EMPTY })}>+ Add dish</Button>
+        </Flex>
       </Flex>
       {err && <Text color="danger" fontSize="14px" role="alert">{err}</Text>}
       <Stack as="ul" listStyleType="none" p={0} spacing="10px" mt="14px">
