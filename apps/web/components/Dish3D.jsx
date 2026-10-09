@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
-import { Box, Image, Text } from '@chakra-ui/react';
+import { Box, Image as ChakraImage, Text } from '@chakra-ui/react';
 import { buildMaps, cropSquare } from '@/lib/relief';
 import { resolveLook } from '@/lib/look';
 
@@ -313,7 +313,7 @@ export default function Dish3D({ dish, currency, look, mode = 'card', onOpen, ap
   }, [dish.imageId, failed, viewer, apiRef]);
 
   const fallback = failed && (dish.imageId
-    ? <Image src={`/api/images/${dish.imageId}`} alt={dish.name} w="100%" h="100%" objectFit="cover" borderRadius="50%" />
+    ? <ChakraImage src={`/api/images/${dish.imageId}`} alt={dish.name} w="100%" h="100%" objectFit="cover" borderRadius="50%" />
     : <Box h="100%" display="grid" placeItems="center" fontSize="64px" aria-hidden="true">🍽</Box>);
 
   const stageProps = {
