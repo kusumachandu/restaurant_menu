@@ -1,5 +1,6 @@
 'use client';
 import { useEffect, useState } from 'react';
+import { Button, FormControl, FormLabel, Input, Stack, Text } from '@chakra-ui/react';
 import { api } from '@/lib/client';
 
 export default function SettingsForm() {
@@ -16,15 +17,24 @@ export default function SettingsForm() {
     catch (e2) { setErr(e2.message); }
   }
 
-  if (!s) return <p>{err || 'Loading…'}</p>;
+  if (!s) return <Text>{err || 'Loading…'}</Text>;
   return (
-    <form onSubmit={save} className="form">
-      <label>Restaurant name<input required maxLength={80} value={s.name} onChange={(e) => setS({ ...s, name: e.target.value })} /></label>
-      <label>Tagline<input maxLength={160} value={s.tagline} onChange={(e) => setS({ ...s, tagline: e.target.value })} /></label>
-      <label>Currency symbol<input maxLength={4} value={s.currency} onChange={(e) => setS({ ...s, currency: e.target.value })} /></label>
-      {err && <p className="error" role="alert">{err}</p>}
-      {msg && <p role="status">{msg}</p>}
-      <button>Save</button>
-    </form>
+    <Stack as="form" onSubmit={save} spacing="14px" mt={4}>
+      <FormControl isRequired>
+        <FormLabel>Restaurant name</FormLabel>
+        <Input maxLength={80} value={s.name} onChange={(e) => setS({ ...s, name: e.target.value })} />
+      </FormControl>
+      <FormControl>
+        <FormLabel>Tagline</FormLabel>
+        <Input maxLength={160} value={s.tagline} onChange={(e) => setS({ ...s, tagline: e.target.value })} />
+      </FormControl>
+      <FormControl>
+        <FormLabel>Currency symbol</FormLabel>
+        <Input maxLength={4} value={s.currency} onChange={(e) => setS({ ...s, currency: e.target.value })} />
+      </FormControl>
+      {err && <Text color="danger" fontSize="14px" role="alert">{err}</Text>}
+      {msg && <Text role="status">{msg}</Text>}
+      <Button type="submit" alignSelf="flex-start">Save</Button>
+    </Stack>
   );
 }

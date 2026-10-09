@@ -1,6 +1,7 @@
 'use client';
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { Box, Button, Flex, Heading, Link } from '@chakra-ui/react';
 import { token } from '@/lib/client';
 import DishManager from '@/components/admin/DishManager';
 import SettingsForm from '@/components/admin/SettingsForm';
@@ -20,22 +21,22 @@ export default function Admin() {
 
   if (!ready) return null;
   return (
-    <main className="admin">
-      <div className="admin-top">
-        <h1>Menu admin</h1>
-        <div>
-          <a className="link" href="/" target="_blank" rel="noreferrer">View menu</a>
-          <button className="ghost" onClick={() => { token.clear(); router.push('/admin/login'); }}>Log out</button>
-        </div>
-      </div>
-      <div className="filters">
+    <Box as="main" maxW="900px" mx="auto" pt="30px" pb="60px" px="clamp(14px, 4vw, 30px)">
+      <Flex justify="space-between" align="center" gap={3} wrap="wrap" mb="6px">
+        <Heading as="h1" fontSize="32px">Menu admin</Heading>
+        <Flex align="center" gap={3}>
+          <Link href="/" isExternal color="ac">View menu</Link>
+          <Button variant="outline" onClick={() => { token.clear(); router.push('/admin/login'); }}>Log out</Button>
+        </Flex>
+      </Flex>
+      <Flex wrap="wrap" gap={2} align="center" my={6}>
         {TABS.map(([k, label]) => (
-          <button key={k} className={`pill ${tab === k ? 'on' : ''}`} onClick={() => setTab(k)} aria-pressed={tab === k}>{label}</button>
+          <Button key={k} variant={tab === k ? 'pillOn' : 'pill'} onClick={() => setTab(k)} aria-pressed={tab === k}>{label}</Button>
         ))}
-      </div>
+      </Flex>
       {tab === 'dishes' && <DishManager />}
       {tab === 'settings' && <SettingsForm />}
       {tab === 'qr' && <QrCard />}
-    </main>
+    </Box>
   );
 }

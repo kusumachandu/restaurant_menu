@@ -1,6 +1,7 @@
 'use client';
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { Box, Button, FormControl, FormLabel, Heading, Input, Stack, Text } from '@chakra-ui/react';
 import { api, token } from '@/lib/client';
 
 export default function Login() {
@@ -25,14 +26,20 @@ export default function Login() {
   }
 
   return (
-    <main className="admin narrow">
-      <h1>Owner login</h1>
-      <form onSubmit={submit} className="form">
-        <label>Email<input type="email" required autoComplete="username" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} /></label>
-        <label>Password<input type="password" required autoComplete="current-password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} /></label>
-        {err && <p className="error" role="alert">{err}</p>}
-        <button disabled={busy}>{busy ? 'Signing in…' : 'Sign in'}</button>
-      </form>
-    </main>
+    <Box as="main" maxW="420px" mx="auto" pt="12vh" pb="60px" px="clamp(14px, 4vw, 30px)">
+      <Heading as="h1" fontSize="32px">Owner login</Heading>
+      <Stack as="form" onSubmit={submit} spacing="14px" mt={4}>
+        <FormControl isRequired>
+          <FormLabel>Email</FormLabel>
+          <Input type="email" autoComplete="username" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
+        </FormControl>
+        <FormControl isRequired>
+          <FormLabel>Password</FormLabel>
+          <Input type="password" autoComplete="current-password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} />
+        </FormControl>
+        {err && <Text color="danger" fontSize="14px" role="alert">{err}</Text>}
+        <Button type="submit" isDisabled={busy}>{busy ? 'Signing in…' : 'Sign in'}</Button>
+      </Stack>
+    </Box>
   );
 }
