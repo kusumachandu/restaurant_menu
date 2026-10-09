@@ -1,5 +1,8 @@
 'use client';
 import { useCallback, useEffect, useState } from 'react';
+import {
+  Box, Button, Checkbox, Flex, FormControl, FormLabel, Heading, Image, Input, SimpleGrid, Stack, Text, Textarea,
+} from '@chakra-ui/react';
 import { api } from '@/lib/client';
 import LookEditor from './LookEditor';
 
@@ -61,49 +64,75 @@ export default function DishManager() {
 
   if (edit) {
     return (
-      <form onSubmit={save} className="form">
-        <h2>{edit._id ? 'Edit dish' : 'New dish'}</h2>
-        <label>Name<input required maxLength={120} value={edit.name} onChange={(e) => setEdit({ ...edit, name: e.target.value })} /></label>
-        <label>Description<textarea maxLength={600} rows={3} value={edit.description} onChange={(e) => setEdit({ ...edit, description: e.target.value })} /></label>
-        <div className="two">
-          <label>Price<input required type="number" min="0" step="1" value={edit.price} onChange={(e) => setEdit({ ...edit, price: e.target.value })} /></label>
-          <label>Category<input required list="cats" value={edit.category} onChange={(e) => setEdit({ ...edit, category: e.target.value })} /><datalist id="cats">{categories.map((c) => <option key={c} value={c} />)}</datalist></label>
-        </div>
-        <div className="checks">
-          <label><input type="checkbox" checked={edit.veg} onChange={(e) => setEdit({ ...edit, veg: e.target.checked })} /> Vegetarian</label>
-          <label><input type="checkbox" checked={edit.special} onChange={(e) => setEdit({ ...edit, special: e.target.checked })} /> Chef&apos;s special</label>
-          <label><input type="checkbox" checked={edit.available} onChange={(e) => setEdit({ ...edit, available: e.target.checked })} /> Available today</label>
-        </div>
-        <label>Photo (best: a top-down photo of the dish)
-          <input type="file" accept="image/*" onChange={upload} />
-        </label>
+      <Stack as="form" onSubmit={save} spacing="14px" mt={4}>
+        <Heading as="h2" fontSize="24px">{edit._id ? 'Edit dish' : 'New dish'}</Heading>
+        <FormControl isRequired>
+          <FormLabel>Name</FormLabel>
+          <Input maxLength={120} value={edit.name} onChange={(e) => setEdit({ ...edit, name: e.target.value })} />
+        </FormControl>
+        <FormControl>
+          <FormLabel>Description</FormLabel>
+          <Textarea maxLength={600} rows={3} value={edit.description} onChange={(e) => setEdit({ ...edit, description: e.target.value })} />
+        </FormControl>
+        <SimpleGrid columns={{ base: 1, sm: 2 }} spacing={3}>
+          <FormControl isRequired>
+            <FormLabel>Price</FormLabel>
+            <Input type="number" min="0" step="1" value={edit.price} onChange={(e) => setEdit({ ...edit, price: e.target.value })} />
+          </FormControl>
+          <FormControl isRequired>
+            <FormLabel>Category</FormLabel>
+            <Input list="cats" value={edit.category} onChange={(e) => setEdit({ ...edit, category: e.target.value })} />
+            <datalist id="cats">{categories.map((c) => <option key={c} value={c} />)}</datalist>
+          </FormControl>
+        </SimpleGrid>
+        <Flex gap="18px" wrap="wrap">
+          <Checkbox colorScheme="orange" isChecked={edit.veg} onChange={(e) => setEdit({ ...edit, veg: e.target.checked })}>Vegetarian</Checkbox>
+          <Checkbox colorScheme="orange" isChecked={edit.special} onChange={(e) => setEdit({ ...edit, special: e.target.checked })}>Chef&apos;s special</Checkbox>
+          <Checkbox colorScheme="orange" isChecked={edit.available} onChange={(e) => setEdit({ ...edit, available: e.target.checked })}>Available today</Checkbox>
+        </Flex>
+        <FormControl>
+          <FormLabel>Photo (best: a top-down photo of the dish)</FormLabel>
+          <Input type="file" accept="image/*" onChange={upload} p="7px" />
+        </FormControl>
         {edit.imageId && <LookEditor dish={{ ...edit, name: edit.name || 'Dish name', price: edit.price || 0 }} currency={currency} look={edit.look} onChange={(look) => setEdit((d) => ({ ...d, look }))} />}
-        {err && <p className="error" role="alert">{err}</p>}
-        <div className="actions">
-          <button disabled={busy}>{busy ? 'Saving…' : 'Save dish'}</button>
-          <button type="button" className="ghost" onClick={() => { setEdit(null); setErr(''); }}>Cancel</button>
-        </div>
-      </form>
+        {err && <Text color="danger" fontSize="14px" role="alert">{err}</Text>}
+        <Flex gap={2} wrap="wrap">
+          <Button type="submit" isDisabled={busy}>{busy ? 'Saving…' : 'Save dish'}</Button>
+          <Button type="button" variant="outline" onClick={() => { setEdit(null); setErr(''); }}>Cancel</Button>
+        </Flex>
+      </Stack>
     );
   }
 
   return (
-    <div>
-      <div className="admin-top"><h2>{dishes.length} dishes</h2><button onClick={() => setEdit({ ...EMPTY })}>+ Add dish</button></div>
-      {err && <p className="error" role="alert">{err}</p>}
-      <ul className="list">
+    <Box>
+      <Flex justify="space-between" align="center" gap={3} wrap="wrap" mb="6px">
+        <Heading as="h2" fontSize="24px">{dishes.length} dishes</Heading>
+        <Button onClick={() => setEdit({ ...EMPTY })}>+ Add dish</Button>
+      </Flex>
+      {err && <Text color="danger" fontSize="14px" role="alert">{err}</Text>}
+      <Stack as="ul" listStyleType="none" p={0} spacing="10px" mt="14px">
         {dishes.map((d) => (
-          <li key={d._id} className={d.available ? '' : 'off'}>
-            {d.imageId ? <img src={`/api/images/${d.imageId}`} alt="" /> : <span className="noimg">🍽</span>}
-            <div className="info"><b>{d.name}</b><small>{d.category} · {d.price}{d.veg ? ' · Veg' : ''}{d.special ? ' · Special' : ''}</small></div>
-            <div className="actions">
-              <button className="ghost" onClick={() => toggle(d)}>{d.available ? 'Mark sold out' : 'Mark available'}</button>
-              <button className="ghost" onClick={() => setEdit({ ...EMPTY, ...d })}>Edit</button>
-              <button className="ghost danger" onClick={() => remove(d)}>Delete</button>
-            </div>
-          </li>
+          <Flex
+            as="li" key={d._id} gap={3} align="center" wrap="wrap" p="10px"
+            bg="card" border="1px solid" borderColor="line" borderRadius="16px"
+            opacity={d.available ? 1 : 0.55}
+          >
+            {d.imageId
+              ? <Image src={`/api/images/${d.imageId}`} alt="" boxSize="56px" borderRadius="50%" objectFit="cover" />
+              : <Box boxSize="56px" borderRadius="50%" bg="line" display="grid" placeItems="center">🍽</Box>}
+            <Flex direction="column" flex={1} minW="140px">
+              <Text as="b">{d.name}</Text>
+              <Text as="small" color="mute">{d.category} · {d.price}{d.veg ? ' · Veg' : ''}{d.special ? ' · Special' : ''}</Text>
+            </Flex>
+            <Flex gap={2} wrap="wrap">
+              <Button variant="outline" onClick={() => toggle(d)}>{d.available ? 'Mark sold out' : 'Mark available'}</Button>
+              <Button variant="outline" onClick={() => setEdit({ ...EMPTY, ...d })}>Edit</Button>
+              <Button variant="outline" color="danger" onClick={() => remove(d)}>Delete</Button>
+            </Flex>
+          </Flex>
         ))}
-      </ul>
-    </div>
+      </Stack>
+    </Box>
   );
 }

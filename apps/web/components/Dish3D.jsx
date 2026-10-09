@@ -1,5 +1,6 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
+import { Box, Image, Text } from '@chakra-ui/react';
 import { buildMaps, cropSquare } from '@/lib/relief';
 import { resolveLook } from '@/lib/look';
 
@@ -45,7 +46,7 @@ const WARM = [1, 0.85, 0.66];
  * `look` (lighting settings) is read every frame, so sliders update live without
  * rebuilding the scene. The WebGL scene exists only while the element is on screen.
  */
-export default function Dish3D({ dish, currency, look, mode = 'card', onOpen, apiRef }) {
+export default function Dish3D({ dish, currency, look, mode = 'card', onOpen, apiRef, width = '100%' }) {
   const box = useRef(null);
   const lookRef = useRef(resolveLook(look));
   const labelRef = useRef({ name: dish.name, price: `${currency}${dish.price}` });
@@ -312,26 +313,41 @@ export default function Dish3D({ dish, currency, look, mode = 'card', onOpen, ap
   }, [dish.imageId, failed, viewer, apiRef]);
 
   const fallback = failed && (dish.imageId
-    ? <img className="stage-img" src={`/api/images/${dish.imageId}`} alt={dish.name} />
-    : <div className="stage-empty" aria-hidden="true">🍽</div>);
+    ? <Image src={`/api/images/${dish.imageId}`} alt={dish.name} w="100%" h="100%" objectFit="cover" borderRadius="50%" />
+    : <Box h="100%" display="grid" placeItems="center" fontSize="64px" aria-hidden="true">🍽</Box>);
+
+  const stageProps = {
+    ref: box,
+    aspectRatio: 1,
+    borderRadius: '18px',
+    position: 'relative',
+    cursor: 'pointer',
+    touchAction: 'pan-y',
+    bg: 'radial-gradient(circle at 50% 35%, color-mix(in srgb, var(--chakra-colors-ac) 22%, transparent), transparent 70%)',
+    sx: { '& canvas': { width: '100%', height: '100%', display: 'block' } },
+  };
 
   if (viewer) {
     return (
-      <div
-        ref={box}
-        className="stage viewer"
+      <Box
+        {...stageProps}
+        w={width}
+        mx="auto"
+        cursor="grab"
+        touchAction="none"
+        userSelect="none"
+        _active={{ cursor: 'grabbing' }}
         tabIndex={0}
         role="group"
         aria-label={`3D view of ${dish.name}. Drag or use arrow keys to rotate, plus and minus to zoom.`}
       >
         {fallback}
-      </div>
+      </Box>
     );
   }
   return (
-    <div
-      ref={box}
-      className="stage"
+    <Box
+      {...stageProps}
       role="button"
       tabIndex={0}
       aria-label={`View ${dish.name} in 3D`}
@@ -339,7 +355,7 @@ export default function Dish3D({ dish, currency, look, mode = 'card', onOpen, ap
       onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen?.(); } }}
     >
       {fallback}
-      <small>Tap to explore in 3D</small>
-    </div>
+      <Text as="small" position="absolute" right="10px" bottom="8px" color="mute" fontSize="12px">Tap to explore in 3D</Text>
+    </Box>
   );
 }
