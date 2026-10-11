@@ -1,13 +1,16 @@
 'use client';
 import { useCallback, useMemo, useState } from 'react';
-import { Badge, Box, Button, Checkbox, Flex, Heading, SimpleGrid, Text } from '@chakra-ui/react';
+import { Badge, Box, Button, Checkbox, Flex, Heading, Image, SimpleGrid, Text } from '@chakra-ui/react';
 import Dish3D from './Dish3D';
 import DishModal from './DishModal';
+import OrderPanel from './OrderPanel';
 
-function DishCard({ dish, currency, onOpen }) {
+function DishCard({ dish, currency, view3d, qty, onAdd, onOpen }) {
   return (
     <Flex as="article" direction="column" bg="card" border="1px solid" borderColor="line" borderRadius="24px" p="14px 14px 18px">
-      <Dish3D dish={dish} currency={currency} look={dish.look} onOpen={onOpen} />
+      {view3d
+        ? <Dish3D dish={dish} currency={currency} look={dish.look} onOpen={onOpen} />
+        : dish.imageId && <Image src={`/api/images/${dish.imageId}`} alt={dish.name} w="100%" aspectRatio={1} objectFit="cover" borderRadius="16px" />}
       <Flex gap={2} align="center" mt={3} mx={1}>
         <Box
           title={dish.veg ? 'Vegetarian' : 'Non-vegetarian'}
@@ -21,14 +24,20 @@ function DishCard({ dish, currency, onOpen }) {
       <Text color="mute" fontSize="14px" mx={1} flex={1}>{dish.description}</Text>
       <Flex justify="space-between" align="center" mt="14px" mx={1}>
         <Text fontFamily="heading" fontWeight={700} fontSize="22px">{currency}{dish.price}</Text>
-        <Button onClick={onOpen}>View in 3D</Button>
+        <Flex gap={2}>
+          {view3d && <Button variant={qty === null ? undefined : 'outline'} onClick={onOpen}>View in 3D</Button>}
+          {qty !== null && <Button onClick={onAdd}>{qty ? `Add (${qty})` : 'Add'}</Button>}
+        </Flex>
       </Flex>
     </Flex>
   );
 }
 
-export default function MenuClient({ menu }) {
+export default function MenuClient({ menu, tableToken }) {
   const { settings, categories, dishes } = menu;
+  const view3d = menu.features?.view3d !== false;
+  const canOrder = Boolean(menu.table && tableToken);
+  const [cart, setCart] = useState({});
   const [cat, setCat] = useState('All');
   const [vegOnly, setVegOnly] = useState(false);
   const [open, setOpen] = useState(null);
@@ -39,11 +48,13 @@ export default function MenuClient({ menu }) {
   );
 
   return (
-    <Box as="main" maxW="1100px" mx="auto" pt="36px" pb="60px" px="clamp(14px, 4vw, 40px)">
+    <Box as="main" maxW="1100px" mx="auto" pt="36px" pb={canOrder ? '160px' : '60px'} px="clamp(14px, 4vw, 40px)">
       <Box as="header">
         <Heading as="h1" fontSize="clamp(34px, 6vw, 58px)" letterSpacing="-.02em">{settings.name}</Heading>
         {settings.tagline && <Text color="mute" mt={2} maxW="52ch">{settings.tagline}</Text>}
-        <Text color="mute" mt={2} maxW="52ch" fontSize="14px">Tap a dish to explore it in 3D: turn it, tilt it and zoom in.</Text>
+        {canOrder && <Text mt={2} fontWeight={700}>Ordering for {menu.table.label}</Text>}
+        {menu.features?.ordering && !canOrder && <Text color="mute" mt={2} fontSize="14px">To place an order, scan the QR code on your table.</Text>}
+        {view3d && <Text color="mute" mt={2} maxW="52ch" fontSize="14px">Tap a dish to explore it in 3D: turn it, tilt it and zoom in.</Text>}
       </Box>
 
       <Flex wrap="wrap" gap={2} align="center" my={6}>
@@ -57,9 +68,10 @@ export default function MenuClient({ menu }) {
         <Text color="mute" py="40px">{dishes.length ? 'No dishes match these filters.' : 'The menu is being prepared. Please check back soon.'}</Text>
       ) : (
         <SimpleGrid minChildWidth="270px" spacing="18px">
-          {shown.map((d) => <DishCard key={d._id} dish={d} currency={settings.currency} onOpen={() => setOpen(d)} />)}
+          {shown.map((d) => <DishCard key={d._id} dish={d} currency={settings.currency} view3d={view3d} qty={canOrder ? cart[d._id] || 0 : null} onAdd={() => setCart((c) => ({ ...c, [d._id]: Math.min(20, (c[d._id] || 0) + 1) }))} onOpen={() => setOpen(d)} />)}
         </SimpleGrid>
       )}
+      {canOrder && <OrderPanel slug={menu.slug} tableToken={tableToken} tableLabel={menu.table.label} dishes={dishes} cart={cart} setCart={setCart} currency={settings.currency} />}
       {open && <DishModal dish={open} currency={settings.currency} onClose={close} />}
     </Box>
   );

@@ -32,7 +32,7 @@ npm run dev                      # API on :4000, web on :3000
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
-| GET | `/api/menu` | no | Settings, categories and available dishes |
+| GET | `/api/r/:slug/menu` | no | A restaurant's settings, plan features and available dishes |
 | GET | `/api/images/:id` | no | Dish image |
 | POST | `/api/auth/login` | no | Returns a JWT |
 | GET/POST | `/api/admin/dishes` | yes | List / create dishes |
@@ -50,8 +50,7 @@ npm run dev                      # API on :4000, web on :3000
 
 ## Notes for production
 
-- One deployment serves one restaurant. For many restaurants, add a `restaurantId` to
-  `Dish`, `Settings` and `Admin`, and read it from the subdomain.
+- Many restaurants share one deployment: each has a slug (`/r/<slug>`) and a plan (starter, standard, pro) that only the super admin (`/super`) can change. Plan rules live in `apps/api/src/plans.js`. The bare domain can redirect to one menu via the `DEFAULT_RESTAURANT` env var on the web app.
 - Admin token lives in `localStorage` for simplicity. For stricter security, move it to an
   httpOnly cookie.
 - Images are stored in MongoDB (resized to 800 px). For hundreds of dishes, move to S3 or

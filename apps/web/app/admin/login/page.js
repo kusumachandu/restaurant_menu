@@ -2,7 +2,7 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Box, Button, FormControl, FormLabel, Heading, Input, Stack, Text } from '@chakra-ui/react';
-import { api, token } from '@/lib/client';
+import { api, role, token } from '@/lib/client';
 
 export default function Login() {
   const router = useRouter();
@@ -15,9 +15,10 @@ export default function Login() {
     setBusy(true);
     setErr('');
     try {
-      const { token: t } = await api('/auth/login', { method: 'POST', body: form });
+      const { token: t, role: r } = await api('/auth/login', { method: 'POST', body: form });
       token.set(t);
-      router.push('/admin');
+      role.set(r);
+      router.push(r === 'super' ? '/super' : '/admin');
     } catch (e2) {
       setErr(e2.message);
     } finally {

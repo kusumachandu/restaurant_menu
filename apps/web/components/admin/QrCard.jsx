@@ -1,5 +1,6 @@
 'use client';
 import { useEffect, useState } from 'react';
+import { api } from '@/lib/client';
 import { Button, FormControl, FormLabel, Heading, Image, Input, Stack, Text } from '@chakra-ui/react';
 import QRCode from 'qrcode';
 
@@ -7,7 +8,9 @@ export default function QrCard() {
   const [url, setUrl] = useState('');
   const [png, setPng] = useState('');
 
-  useEffect(() => { setUrl(window.location.origin); }, []);
+  useEffect(() => {
+    api('/admin/settings').then((s) => setUrl(`${window.location.origin}/r/${s.slug}`)).catch(() => setUrl(window.location.origin));
+  }, []);
   useEffect(() => {
     if (url) QRCode.toDataURL(url, { width: 640, margin: 2, errorCorrectionLevel: 'M' }).then(setPng).catch(() => setPng(''));
   }, [url]);

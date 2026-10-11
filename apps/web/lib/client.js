@@ -7,6 +7,15 @@ export const token = {
   clear: () => localStorage.removeItem(KEY),
 };
 
+// 'owner' (restaurant) or 'super' (platform owner). Only used to choose which screen to show;
+// the API enforces access from the signed token.
+const ROLE_KEY = 'menu3d_admin_role';
+export const role = {
+  get: () => (typeof window === 'undefined' ? null : localStorage.getItem(ROLE_KEY)),
+  set: (r) => localStorage.setItem(ROLE_KEY, r),
+  clear: () => localStorage.removeItem(ROLE_KEY),
+};
+
 export async function api(path, { method = 'GET', body, form } = {}) {
   const headers = {};
   const t = token.get();
@@ -23,6 +32,7 @@ export async function api(path, { method = 'GET', body, form } = {}) {
   if (!res.ok) {
     if (res.status === 401 && path !== '/auth/login') {
       token.clear();
+      role.clear();
       window.location.href = '/admin/login';
     }
     throw new Error(json.error || 'Request failed');

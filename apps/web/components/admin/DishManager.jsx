@@ -14,11 +14,13 @@ export default function DishManager() {
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
   const [currency, setCurrency] = useState('₹');
+  const [features, setFeatures] = useState(null);
 
   const load = useCallback(() => api('/admin/dishes').then(setDishes).catch((e) => setErr(e.message)), []);
   useEffect(() => { load(); }, [load]);
-  useEffect(() => { api('/admin/settings').then((s) => setCurrency(s.currency)).catch(() => {}); }, []);
+  useEffect(() => { api('/admin/settings').then((s) => { setCurrency(s.currency); setFeatures(s.features); }).catch(() => {}); }, []);
   const categories = [...new Set(dishes.map((d) => d.category))];
+  const atLimit = features?.maxDishes != null && dishes.length >= features.maxDishes;
 
   async function save(e) {
     e.preventDefault();
@@ -123,7 +125,7 @@ export default function DishManager() {
           <FormLabel>Photo (best: a top-down photo of the dish)</FormLabel>
           <Input type="file" accept="image/*" onChange={upload} p="7px" />
         </FormControl>
-        {edit.imageId && <LookEditor dish={{ ...edit, name: edit.name || 'Dish name', price: edit.price || 0 }} currency={currency} look={edit.look} onChange={(look) => setEdit((d) => ({ ...d, look }))} />}
+        {features?.lookEditor && edit.imageId && <LookEditor dish={{ ...edit, name: edit.name || 'Dish name', price: edit.price || 0 }} currency={currency} look={edit.look} onChange={(look) => setEdit((d) => ({ ...d, look }))} />}
         {err && <Text color="danger" fontSize="14px" role="alert">{err}</Text>}
         <Flex gap={2} wrap="wrap">
           <Button type="submit" isDisabled={busy}>{busy ? 'Saving…' : 'Save dish'}</Button>
@@ -136,12 +138,13 @@ export default function DishManager() {
   return (
     <Box>
       <Flex justify="space-between" align="center" gap={3} wrap="wrap" mb="6px">
-        <Heading as="h2" fontSize="24px">{dishes.length} dishes</Heading>
+        <Heading as="h2" fontSize="24px">{dishes.length}{features?.maxDishes ? ` / ${features.maxDishes}` : ''} dishes</Heading>
         <Flex gap={2} wrap="wrap">
-          <Button variant="outline" onClick={exportPdf} isDisabled={!dishes.length}>Export PDF</Button>
-          <Button onClick={() => setEdit({ ...EMPTY })}>+ Add dish</Button>
+          {features?.pdfExport && <Button variant="outline" onClick={exportPdf} isDisabled={!dishes.length}>Export PDF</Button>}
+          <Button onClick={() => setEdit({ ...EMPTY })} isDisabled={atLimit}>+ Add dish</Button>
         </Flex>
       </Flex>
+      {features && <Text color="mute" fontSize="14px">{features.label} plan{atLimit ? ': dish limit reached. Contact us to upgrade.' : ''}</Text>}
       {err && <Text color="danger" fontSize="14px" role="alert">{err}</Text>}
       <Stack as="ul" listStyleType="none" p={0} spacing="10px" mt="14px">
         {dishes.map((d) => (
