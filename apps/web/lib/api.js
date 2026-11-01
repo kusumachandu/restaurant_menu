@@ -6,7 +6,9 @@ export const API_URL = process.env.API_URL || 'http://localhost:4000';
 export async function getMenu(slug, table) {
   try {
     const q = table ? `?t=${encodeURIComponent(table)}` : '';
-    const res = await fetch(`${API_URL}/api/r/${encodeURIComponent(slug)}/menu${q}`, { cache: 'no-store' });
+    // Anonymous menus are cached briefly; table (ordering) views stay fresh.
+    const opts = table ? { cache: 'no-store' } : { next: { revalidate: 20 } };
+    const res = await fetch(`${API_URL}/api/r/${encodeURIComponent(slug)}/menu${q}`, opts);
     if (!res.ok) return null;
     return await res.json();
   } catch {

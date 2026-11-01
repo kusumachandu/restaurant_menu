@@ -1,78 +1,146 @@
 'use client';
-import { useCallback, useMemo, useState } from 'react';
-import { Badge, Box, Button, Checkbox, Flex, Heading, Image, SimpleGrid, Text } from '@chakra-ui/react';
-import Dish3D from './Dish3D';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Box, Flex, Heading, SimpleGrid, Text } from '@chakra-ui/react';
+import { motion, useReducedMotion } from 'framer-motion';
 import DishModal from './DishModal';
 import OrderPanel from './OrderPanel';
+import CategoryNav from './menu/CategoryNav';
+import DishRow from './menu/DishRow';
+import Hero from './menu/Hero';
+import Signature from './menu/Signature';
+import { C, EASE, FONT, GRAIN, slugId } from './menu/ui';
 
-function DishCard({ dish, currency, view3d, qty, onAdd, onOpen }) {
-  return (
-    <Flex as="article" direction="column" bg="card" border="1px solid" borderColor="line" borderRadius="24px" p="14px 14px 18px">
-      {view3d
-        ? <Dish3D dish={dish} currency={currency} look={dish.look} onOpen={onOpen} />
-        : dish.imageId && <Image src={`/api/images/${dish.imageId}`} alt={dish.name} w="100%" aspectRatio={1} objectFit="cover" borderRadius="16px" />}
-      <Flex gap={2} align="center" mt={3} mx={1}>
-        <Box
-          title={dish.veg ? 'Vegetarian' : 'Non-vegetarian'}
-          w="14px" h="14px" border="2px solid" borderRadius="3px" position="relative"
-          color={dish.veg ? '#1b8a3a' : '#b3261e'}
-          _after={{ content: '""', position: 'absolute', inset: '2px', borderRadius: '50%', bg: 'currentColor' }}
-        />
-        {dish.special && <Badge bg="ac" color="#fff" borderRadius="99px" px="10px" py="2px" fontSize="12px" fontWeight={700} textTransform="none">Chef&apos;s special</Badge>}
-      </Flex>
-      <Heading as="h3" fontSize="21px" m="6px 4px 4px">{dish.name}</Heading>
-      <Text color="mute" fontSize="14px" mx={1} flex={1}>{dish.description}</Text>
-      <Flex justify="space-between" align="center" mt="14px" mx={1}>
-        <Text fontFamily="heading" fontWeight={700} fontSize="22px">{currency}{dish.price}</Text>
-        <Flex gap={2}>
-          {view3d && <Button variant={qty === null ? undefined : 'outline'} onClick={onOpen}>View in 3D</Button>}
-          {qty !== null && <Button onClick={onAdd}>{qty ? `Add (${qty})` : 'Add'}</Button>}
-        </Flex>
-      </Flex>
-    </Flex>
-  );
-}
+const MotionBox = motion(Box);
 
 export default function MenuClient({ menu, tableToken }) {
   const { settings, categories, dishes } = menu;
   const view3d = menu.features?.view3d !== false;
+  const ar = Boolean(menu.features?.ar) && view3d;
   const canOrder = Boolean(menu.table && tableToken);
+  const reduce = useReducedMotion();
   const [cart, setCart] = useState({});
-  const [cat, setCat] = useState('All');
+  const [active, setActive] = useState(null);
   const [vegOnly, setVegOnly] = useState(false);
+  const [query, setQuery] = useState('');
   const [open, setOpen] = useState(null);
   const close = useCallback(() => setOpen(null), []);
-  const shown = useMemo(
-    () => dishes.filter((d) => (cat === 'All' || d.category === cat) && (!vegOnly || d.veg)),
-    [dishes, cat, vegOnly]
-  );
+  const jumping = useRef(0);
+
+  // The menu has its own look, whatever the visitor's system theme: paint the whole page, including overscroll.
+  useEffect(() => {
+    const { documentElement: html, body } = document;
+    const before = [html.style.background, body.style.background, html.style.colorScheme];
+    html.style.background = C.bg; body.style.background = C.bg; html.style.colorScheme = 'dark';
+    return () => { [html.style.background, body.style.background, html.style.colorScheme] = before; };
+  }, []);
+
+  const add = (id, delta) => setCart((c) => {
+    const qty = Math.max(0, Math.min(20, (c[id] || 0) + delta));
+    const next = { ...c };
+    if (qty) next[id] = qty; else delete next[id];
+    return next;
+  });
+  const qtyOf = (id) => (canOrder ? cart[id] || 0 : null);
+
+  const sections = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const ok = (d) => (!vegOnly || d.veg) && (!q || `${d.name} ${d.description || ''} ${d.category}`.toLowerCase().includes(q));
+    return categories.map((c) => ({ name: c, items: dishes.filter((d) => d.category === c && ok(d)) })).filter((s) => s.items.length);
+  }, [categories, dishes, vegOnly, query]);
+
+  const withPhoto = useMemo(() => dishes.filter((d) => d.imageId), [dishes]);
+  const signature = useMemo(() => {
+    const picks = withPhoto.filter((d) => d.special);
+    return (picks.length ? picks : withPhoto).slice(0, 6);
+  }, [withPhoto]);
+  const heroDish = signature[0];
+
+  // Highlight the category whose section is under the sticky bar.
+  useEffect(() => {
+    const els = sections.map((s) => document.getElementById(slugId(s.name))).filter(Boolean);
+    if (!els.length) return undefined;
+    const io = new IntersectionObserver((entries) => {
+      if (Date.now() < jumping.current) return;
+      const hit = entries.filter((e) => e.isIntersecting).sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top)[0];
+      if (hit) setActive(hit.target.dataset.cat);
+    }, { rootMargin: '-110px 0px -62% 0px' });
+    els.forEach((el) => io.observe(el));
+    return () => io.disconnect();
+  }, [sections]);
+
+  const jump = (name) => {
+    setActive(name);
+    jumping.current = Date.now() + 900; // do not let the scroll-spy fight the scroll
+    document.getElementById(slugId(name))?.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'start' });
+  };
+  const explore = () => document.getElementById('menu')?.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'start' });
+
+  const current = active && sections.some((s) => s.name === active) ? active : sections[0]?.name;
+  let rowIndex = 0;
 
   return (
-    <Box as="main" maxW="1100px" mx="auto" pt="36px" pb={canOrder ? '160px' : '60px'} px="clamp(14px, 4vw, 40px)">
-      <Box as="header">
-        <Heading as="h1" fontSize="clamp(34px, 6vw, 58px)" letterSpacing="-.02em">{settings.name}</Heading>
-        {settings.tagline && <Text color="mute" mt={2} maxW="52ch">{settings.tagline}</Text>}
-        {canOrder && <Text mt={2} fontWeight={700}>Ordering for {menu.table.label}</Text>}
-        {menu.features?.ordering && !canOrder && <Text color="mute" mt={2} fontSize="14px">To place an order, scan the QR code on your table.</Text>}
-        {view3d && <Text color="mute" mt={2} maxW="52ch" fontSize="14px">Tap a dish to explore it in 3D: turn it, tilt it and zoom in.</Text>}
+    <Box as="main" position="relative" bg={C.bg} color={C.ivory} fontFamily={FONT.sans} minH="100vh" pb={canOrder ? '190px' : 0} overflowX="clip">
+      <Hero settings={settings} dish={heroDish} table={canOrder ? menu.table : null} view3d={view3d} ar={ar} onExplore={explore} />
+
+      <Signature dishes={signature} currency={settings.currency} view3d={view3d} qtyOf={qtyOf} onAdd={(id) => add(id, 1)} onRemove={(id) => add(id, -1)} onOpen={setOpen} />
+
+      <Box id="menu" mt={{ base: '30px', md: '50px' }}>
+        <CategoryNav
+          names={sections.map((s) => s.name)} current={current} onJump={jump}
+          vegOnly={vegOnly} setVegOnly={setVegOnly} query={query} setQuery={setQuery}
+        />
+
+        <Box maxW="1180px" mx="auto" px="clamp(14px, 4vw, 40px)" pb="30px">
+          {menu.features?.ordering && !canOrder && (
+            <Text mt={6} textAlign="center" fontSize="13px" letterSpacing=".08em" color={C.mute}>To place an order, scan the QR code on your table.</Text>
+          )}
+          {sections.length === 0 ? (
+            <Text color={C.mute} py="70px" textAlign="center" fontFamily={FONT.display} fontStyle="italic" fontSize="24px">
+              {dishes.length ? 'No dishes match your search.' : 'The menu is being prepared. Please check back soon.'}
+            </Text>
+          ) : sections.map((s, si) => (
+            <Box as="section" key={s.name} id={slugId(s.name)} data-cat={s.name} pt={{ base: '54px', md: '76px' }} sx={{ scrollMarginTop: '58px' }}>
+              <MotionBox
+                initial={reduce ? false : { opacity: 0, y: 20 }} whileInView={{ opacity: 1, y: 0 }} viewport={{ once: true }} transition={{ duration: 0.7, ease: EASE }}
+                display="flex" alignItems="center" gap={{ base: '14px', md: '24px' }} mb={{ base: '24px', md: '34px' }}
+              >
+                <Text fontFamily={FONT.display} fontSize={{ base: '20px', md: '26px' }} color={C.gold} fontStyle="italic" aria-hidden="true">{String(si + 1).padStart(2, '0')}</Text>
+                <Heading as="h2" fontFamily={FONT.display} fontWeight={600} fontSize={{ base: '36px', md: '54px' }} lineHeight={1} color={C.ivory}>{s.name}</Heading>
+                <Box flex={1} h="1px" bg={`linear-gradient(90deg, ${C.lineHi}, transparent)`} />
+                <Text fontSize="12px" letterSpacing=".2em" textTransform="uppercase" color={C.mute} whiteSpace="nowrap">{s.items.length} {s.items.length > 1 ? 'dishes' : 'dish'}</Text>
+              </MotionBox>
+              <SimpleGrid columns={{ base: 1, lg: 2 }} spacing={{ base: '14px', md: '20px' }}>
+                {s.items.map((d) => {
+                  const i = rowIndex++;
+                  return (
+                    <DishRow
+                      key={d._id} dish={d} currency={settings.currency} view3d={view3d} index={i} priority={i < 3} still={reduce}
+                      qty={qtyOf(d._id)} onAdd={() => add(d._id, 1)} onRemove={() => add(d._id, -1)} onOpen={() => setOpen(d)}
+                    />
+                  );
+                })}
+              </SimpleGrid>
+            </Box>
+          ))}
+        </Box>
       </Box>
 
-      <Flex wrap="wrap" gap={2} align="center" my={6}>
-        {['All', ...categories].map((c) => (
-          <Button key={c} variant={cat === c ? 'pillOn' : 'pill'} onClick={() => setCat(c)} aria-pressed={cat === c}>{c}</Button>
-        ))}
-        <Checkbox ml="auto" isChecked={vegOnly} onChange={(e) => setVegOnly(e.target.checked)} colorScheme="orange" sx={{ '.chakra-checkbox__label': { fontSize: '14px' } }}>Veg only</Checkbox>
-      </Flex>
+      <Box as="footer" textAlign="center" px="20px" pt="80px" pb={{ base: '70px', md: '90px' }} position="relative">
+        <Box position="absolute" inset={0} bgImage={GRAIN} opacity={0.05} pointerEvents="none" aria-hidden="true" />
+        <Flex align="center" justify="center" gap="14px" color={C.gold} aria-hidden="true">
+          <Box h="1px" w="60px" bg={`linear-gradient(90deg, transparent, ${C.gold})`} /><Text fontSize="12px">✦</Text><Box h="1px" w="60px" bg={`linear-gradient(270deg, transparent, ${C.gold})`} />
+        </Flex>
+        <Heading as="p" mt={5} fontFamily={FONT.display} fontWeight={600} fontSize="32px" color={C.ivory}>{settings.name}</Heading>
+        <Text mt={2} fontFamily={FONT.display} fontStyle="italic" fontSize="19px" color={C.mute}>Thank you for dining with us</Text>
+      </Box>
 
-      {shown.length === 0 ? (
-        <Text color="mute" py="40px">{dishes.length ? 'No dishes match these filters.' : 'The menu is being prepared. Please check back soon.'}</Text>
-      ) : (
-        <SimpleGrid minChildWidth="270px" spacing="18px">
-          {shown.map((d) => <DishCard key={d._id} dish={d} currency={settings.currency} view3d={view3d} qty={canOrder ? cart[d._id] || 0 : null} onAdd={() => setCart((c) => ({ ...c, [d._id]: Math.min(20, (c[d._id] || 0) + 1) }))} onOpen={() => setOpen(d)} />)}
-        </SimpleGrid>
-      )}
       {canOrder && <OrderPanel slug={menu.slug} tableToken={tableToken} tableLabel={menu.table.label} dishes={dishes} cart={cart} setCart={setCart} currency={settings.currency} />}
-      {open && <DishModal dish={open} currency={settings.currency} onClose={close} />}
+      {open && (
+        <DishModal
+          dish={open} currency={settings.currency} onClose={close} ar={ar}
+          qty={qtyOf(open._id)} onAdd={() => add(open._id, 1)} onRemove={() => add(open._id, -1)}
+        />
+      )}
     </Box>
   );
 }

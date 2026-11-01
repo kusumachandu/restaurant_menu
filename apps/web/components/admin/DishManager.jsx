@@ -6,7 +6,7 @@ import {
 import { api } from '@/lib/client';
 import LookEditor from './LookEditor';
 
-const EMPTY = { name: '', description: '', price: '', category: 'Mains', veg: false, special: false, available: true, imageId: null, look: null };
+const EMPTY = { name: '', description: '', price: '', category: 'Mains', veg: false, special: false, available: true, imageId: null, cutout: false, modelId: null, look: null };
 
 export default function DishManager() {
   const [dishes, setDishes] = useState([]);
@@ -46,11 +46,26 @@ export default function DishManager() {
     fd.append('image', file);
     setErr('');
     try {
-      const { imageId } = await api('/admin/upload', { method: 'POST', form: fd });
-      setEdit((d) => ({ ...d, imageId }));
+      const { imageId, cutout } = await api('/admin/upload', { method: 'POST', form: fd });
+      setEdit((d) => ({ ...d, imageId, cutout }));
     } catch (e2) {
       setErr(e2.message);
     }
+  }
+
+  async function uploadModel(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    const fd = new FormData();
+    fd.append('model', file);
+    setErr('');
+    try {
+      const { modelId } = await api('/admin/upload-model', { method: 'POST', form: fd });
+      setEdit((d) => ({ ...d, modelId }));
+    } catch (e2) {
+      setErr(e2.message);
+    }
+    e.target.value = '';
   }
 
   async function toggle(d) {
@@ -125,6 +140,17 @@ export default function DishManager() {
           <FormLabel>Photo (best: a top-down photo of the dish)</FormLabel>
           <Input type="file" accept="image/*" onChange={upload} p="7px" />
         </FormControl>
+        {features?.ar && (
+          <FormControl>
+            <FormLabel>AR 3D model (optional, .glb file, up to 15 MB)</FormLabel>
+            <Input type="file" accept=".glb,model/gltf-binary" onChange={uploadModel} p="7px" />
+            <Text fontSize="13px" color="mute" mt={1}>
+              {edit.modelId ? 'A 3D model is attached: customers see it on their table in AR. ' : 'Without a model, AR shows the dish shape built from its photo, lying on the table. '}
+              Scan the dish with a phone app such as Polycam, Luma or Kiri Engine and export as GLB.
+            </Text>
+            {edit.modelId && <Button type="button" variant="outline" size="sm" mt={2} onClick={() => setEdit({ ...edit, modelId: null })}>Remove 3D model</Button>}
+          </FormControl>
+        )}
         {features?.lookEditor && edit.imageId && <LookEditor dish={{ ...edit, name: edit.name || 'Dish name', price: edit.price || 0 }} currency={currency} look={edit.look} onChange={(look) => setEdit((d) => ({ ...d, look }))} />}
         {err && <Text color="danger" fontSize="14px" role="alert">{err}</Text>}
         <Flex gap={2} wrap="wrap">
@@ -154,7 +180,7 @@ export default function DishManager() {
             opacity={d.available ? 1 : 0.55}
           >
             {d.imageId
-              ? <Image src={`/api/images/${d.imageId}`} alt="" boxSize="56px" borderRadius="50%" objectFit="cover" />
+              ? <Image src={`/api/images/${d.imageId}?w=96`} alt="" loading="lazy" boxSize="56px" borderRadius="50%" objectFit="cover" />
               : <Box boxSize="56px" borderRadius="50%" bg="line" display="grid" placeItems="center">🍽</Box>}
             <Flex direction="column" flex={1} minW="140px">
               <Text as="b">{d.name}</Text>

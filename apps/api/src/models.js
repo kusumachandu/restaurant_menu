@@ -43,6 +43,8 @@ export const Image = model(
       restaurantId: { type: Schema.Types.ObjectId, ref: 'Restaurant', index: true },
       data: Buffer,
       contentType: String,
+      cutout: { type: Buffer, default: null },        // transparent WebP of just the dish, see cutout.js
+      cutoutTried: { type: Boolean, default: false }, // so the backfill does not retry photos that cannot be cut out
     },
     { timestamps: true }
   )
@@ -61,6 +63,7 @@ export const Dish = model(
       special: { type: Boolean, default: false },
       available: { type: Boolean, default: true },
       imageId: { type: Schema.Types.ObjectId, ref: 'Image', default: null },
+      modelId: { type: Schema.Types.ObjectId, ref: 'Image', default: null }, // optional .glb for AR
       sortOrder: { type: Number, default: 0 },
       look: { type: Schema.Types.Mixed, default: null }, // lighting settings, see routes.js
     },

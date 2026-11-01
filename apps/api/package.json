@@ -5,7 +5,11 @@
   "scripts": {
     "dev": "node --watch src/index.js",
     "start": "node src/index.js",
-    "seed": "node src/seed.js"
+    "seed": "node src/seed.js",
+    "cutouts": "node src/cutouts.js"
+  },
+  "optionalDependencies": {
+    "@imgly/background-removal-node": "^1.4.5"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

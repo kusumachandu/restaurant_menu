@@ -10,9 +10,11 @@ import crypto from 'node:crypto';
 import { Admin, Dish, Image, ORDER_STATUSES, Order, Restaurant, Table } from './models.js';
 import { requireAuth, requireOwner, requireSuper, wrap } from './middleware.js';
 import { PLAN_NAMES, featuresOf } from './plans.js';
+import { makeCutout } from './cutout.js';
 
 const router = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 8 * 1024 * 1024 } });
+const uploadModel = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
 const objectId = z.string().regex(/^[a-f\d]{24}$/i);
 
 // Lighting/appearance a dish is shown with. Ranges mirror LOOK_FIELDS in apps/web/lib/look.js.
@@ -39,6 +41,7 @@ const dishSchema = z.object({
   special: z.boolean().default(false),
   available: z.boolean().default(true),
   imageId: objectId.nullable().optional(),
+  modelId: objectId.nullable().optional(), // optional real 3D model (.glb) used for AR
   sortOrder: z.coerce.number().default(0),
   look: lookSchema.nullable().optional(),
 });
@@ -52,7 +55,14 @@ const slugSchema = z.string().trim().toLowerCase().regex(/^[a-z0-9][a-z0-9-]{1,3
 const passwordSchema = z.string().min(8).max(100);
 
 const publicSettings = (r) => ({ name: r.name, tagline: r.tagline, currency: r.currency });
-const dishOut = (d) => ({ ...d, _id: String(d._id), imageId: d.imageId ? String(d.imageId) : null });
+const dishOut = (d, cut = new Set()) => ({
+  ...d, _id: String(d._id), imageId: d.imageId ? String(d.imageId) : null, modelId: d.modelId ? String(d.modelId) : null,
+  cutout: Boolean(d.imageId && cut.has(String(d.imageId))), // the photo has its background removed
+});
+// Ids of the dishes' photos that have a cutout (without loading the image data).
+const cutoutIds = async (dishes) => new Set(
+  (await Image.find({ _id: { $in: dishes.map((d) => d.imageId).filter(Boolean) }, cutout: { $ne: null } }).select('_id').lean()).map((i) => String(i._id))
+);
 
 /* ---------- public ---------- */
 router.get('/r/:slug/menu', wrap(async (req, res) => {
@@ -62,6 +72,7 @@ router.get('/r/:slug/menu', wrap(async (req, res) => {
   const dishes = await Dish.find({ restaurantId: restaurant._id, available: true })
     .sort({ category: 1, sortOrder: 1, name: 1 }).lean();
   const categories = [...new Set(dishes.map((d) => d.category))];
+  const cut = await cutoutIds(dishes);
   // A valid table token (from the table's QR code) switches ordering on for this visitor.
   const t = features.ordering && typeof req.query.t === 'string'
     ? await Table.findOne({ restaurantId: restaurant._id, token: req.query.t, active: true }).lean()
@@ -70,10 +81,10 @@ router.get('/r/:slug/menu', wrap(async (req, res) => {
   res.json({
     slug: restaurant.slug,
     settings: publicSettings(restaurant),
-    features: { view3d: features.view3d, ordering: features.ordering },
+    features: { view3d: features.view3d, ar: features.ar, ordering: features.ordering },
     table: t ? { label: t.label } : null,
     categories,
-    dishes: dishes.map((d) => dishOut(features.lookEditor ? d : { ...d, look: null })),
+    dishes: dishes.map((d) => dishOut(features.lookEditor ? d : { ...d, look: null }, cut)),
   });
 }));
 
@@ -118,12 +129,54 @@ router.get('/r/:slug/orders', wrap(async (req, res) => {
   })));
 }));
 
+// Resized copies are small (10-40 KB) and cached in memory, so repeat requests skip Mongo and sharp.
+const SIZES = [96, 240, 480, 800];
+const variants = new Map();
+const VARIANT_BUDGET = 64 * 1024 * 1024;
+let variantBytes = 0;
+
+function remember(key, buf) {
+  variants.set(key, buf);
+  variantBytes += buf.length;
+  for (const [k, v] of variants) {
+    if (variantBytes <= VARIANT_BUDGET) break;
+    variants.delete(k);
+    variantBytes -= v.length;
+  }
+}
+
 router.get('/images/:id', wrap(async (req, res) => {
-  const img = await Image.findById(req.params.id).select('data contentType');
-  if (!img) return res.status(404).end();
-  res.set('Content-Type', img.contentType);
+  if (!objectId.safeParse(req.params.id).success) return res.status(404).end();
+  const want = Number(req.query.w);
+  const w = SIZES.find((s) => s >= want); // undefined => original size
+  const cut = req.query.cut === '1';
   res.set('Cache-Control', 'public, max-age=31536000, immutable');
-  res.send(img.data);
+
+  const key = w ? `${req.params.id}:${cut ? 'c' : 'p'}:${w}` : null;
+  if (key && variants.has(key)) {
+    const hit = variants.get(key);
+    variants.delete(key); variants.set(key, hit); // refresh recency
+    res.set('Content-Type', 'image/webp');
+    return res.send(hit);
+  }
+
+  const img = await Image.findById(req.params.id).select(cut ? 'cutout' : 'data contentType');
+  if (!img || (cut && !img.cutout)) return res.status(404).end();
+  if (cut) {
+    res.set('Content-Type', 'image/webp');
+    if (!w) return res.send(img.cutout);
+    const out = await sharp(img.cutout).resize(w, w, { fit: 'inside' }).webp({ quality: 85, alphaQuality: 90 }).toBuffer();
+    remember(key, out);
+    return res.send(out);
+  }
+  if (!w || w >= 800 || !img.contentType.startsWith('image/')) {
+    res.set('Content-Type', img.contentType);
+    return res.send(img.data);
+  }
+  const out = await sharp(img.data).resize(w, w, { fit: 'cover' }).webp({ quality: 78 }).toBuffer();
+  remember(key, out);
+  res.set('Content-Type', 'image/webp');
+  res.send(out);
 }));
 
 /* ---------- auth ---------- */
@@ -218,14 +271,20 @@ const own = [requireAuth, requireOwner];
 
 router.get('/admin/dishes', own, wrap(async (req, res) => {
   const dishes = await Dish.find({ restaurantId: req.restaurant._id }).sort({ category: 1, sortOrder: 1, name: 1 }).lean();
-  res.json(dishes.map(dishOut));
+  const cut = await cutoutIds(dishes);
+  res.json(dishes.map((d) => dishOut(d, cut)));
 }));
+
+const MODEL_TYPE = 'model/gltf-binary';
 
 // Applies plan rules and makes sure the image belongs to this restaurant.
 async function checkDishData(req, data) {
   if (!req.features.lookEditor) delete data.look;
   if (data.imageId && !(await Image.exists({ _id: data.imageId, restaurantId: req.restaurant._id }))) {
     throw new z.ZodError([{ code: 'custom', path: ['imageId'], message: 'Invalid image' }]);
+  }
+  if (data.modelId && !(await Image.exists({ _id: data.modelId, restaurantId: req.restaurant._id, contentType: MODEL_TYPE }))) {
+    throw new z.ZodError([{ code: 'custom', path: ['modelId'], message: 'Invalid 3D model' }]);
   }
 }
 
@@ -246,9 +305,11 @@ router.put('/admin/dishes/:id', own, wrap(async (req, res) => {
   const existing = await Dish.findOne({ _id: req.params.id, restaurantId: req.restaurant._id });
   if (!existing) return res.status(404).json({ error: 'Dish not found' });
   const oldImage = existing.imageId ? String(existing.imageId) : null;
+  const oldModel = existing.modelId ? String(existing.modelId) : null;
   existing.set(data);
   await existing.save();
   if (oldImage && 'imageId' in data && data.imageId !== oldImage) await Image.findByIdAndDelete(oldImage);
+  if (oldModel && 'modelId' in data && data.modelId !== oldModel) await Image.findByIdAndDelete(oldModel);
   res.json(existing);
 }));
 
@@ -256,6 +317,7 @@ router.delete('/admin/dishes/:id', own, wrap(async (req, res) => {
   const dish = await Dish.findOneAndDelete({ _id: req.params.id, restaurantId: req.restaurant._id });
   if (!dish) return res.status(404).json({ error: 'Dish not found' });
   if (dish.imageId) await Image.findByIdAndDelete(dish.imageId);
+  if (dish.modelId) await Image.findByIdAndDelete(dish.modelId);
   res.status(204).end();
 }));
 
@@ -268,8 +330,23 @@ router.post('/admin/upload', own, upload.single('image'), wrap(async (req, res) 
   } catch {
     return res.status(400).json({ error: 'That file is not a valid image' });
   }
-  const img = await Image.create({ restaurantId: req.restaurant._id, data, contentType: 'image/jpeg' });
-  res.status(201).json({ imageId: String(img._id) });
+  let cutout = null;
+  let tried = true;
+  try { cutout = await makeCutout(data); } catch (e) { tried = false; console.warn('Cutout failed:', e.message); } // photo still works; `npm run cutouts` retries
+  const img = await Image.create({ restaurantId: req.restaurant._id, data, contentType: 'image/jpeg', cutout, cutoutTried: tried });
+  res.status(201).json({ imageId: String(img._id), cutout: Boolean(cutout) });
+}));
+
+// Optional real 3D model of a dish (binary glTF), shown in AR on the customer's table.
+router.post('/admin/upload-model', own, uploadModel.single('model'), wrap(async (req, res) => {
+  if (!req.features.ar) return res.status(403).json({ error: 'AR is not included in your plan' });
+  const f = req.file;
+  if (!f) return res.status(400).json({ error: 'No file received' });
+  if (f.buffer.length < 12 || f.buffer.toString('ascii', 0, 4) !== 'glTF') {
+    return res.status(400).json({ error: 'Please upload a .glb file (binary glTF)' });
+  }
+  const m = await Image.create({ restaurantId: req.restaurant._id, data: f.buffer, contentType: MODEL_TYPE });
+  res.status(201).json({ modelId: String(m._id) });
 }));
 
 // Plan, slug and features are read-only here: owners cannot change them.
