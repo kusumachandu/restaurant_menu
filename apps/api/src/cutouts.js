@@ -1,5 +1,6 @@
 // Prepares dish photos uploaded before cutouts and depth maps existed: removes the background and estimates depth. Safe to re-run:
 // it only touches photos that have no cutout yet. Usage: `npm run cutouts`.
+process.env.ENABLE_ML = '1'; // this script exists to run the models, so switch them on (run it where there is enough memory)
 import mongoose from 'mongoose';
 import { config } from './config.js';
 import { Dish, Image } from './models.js';

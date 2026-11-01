@@ -7,7 +7,7 @@ import Stepper, { VegMark } from './menu/Stepper';
 import { C, FONT } from './menu/ui';
 
 /** Full-screen viewer: drag to turn the dish to any angle, pinch or scroll to zoom. */
-export default function DishModal({ dish, currency, onClose, qty = null, onAdd, onRemove, ar = false }) {
+export default function DishModal({ dish, currency, onClose, qty = null, onAdd, onRemove, ar = false, orderHint = false }) {
   const api = useRef(null);
 
   return (
@@ -45,6 +45,12 @@ export default function DishModal({ dish, currency, onClose, qty = null, onAdd, 
                 Reset view
               </Button>
             </Flex>
+            {orderHint && (
+              <Flex mt={5} align="center" gap="12px" p="12px 16px" maxW="360px" borderRadius="16px" border="1px solid" borderColor={C.lineHi} bg="rgba(212,168,75,.08)" role="note" textAlign="left">
+                <Box flex="none" color={C.gold} fontSize="20px" aria-hidden="true">▦</Box>
+                <Text fontSize="13px" lineHeight={1.45} color={C.mute}>To order this dish, scan the QR code on your table.</Text>
+              </Flex>
+            )}
             {ar && (dish.modelId || dish.imageId) && <Box mt={4} w="100%" maxW="360px"><ArButton dish={dish} /></Box>}
           </Flex>
         </Flex>

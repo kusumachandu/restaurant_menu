@@ -80,7 +80,23 @@ export default function MenuClient({ menu, tableToken }) {
 
   return (
     <Box as="main" position="relative" bg={C.bg} color={C.ivory} fontFamily={FONT.sans} minH="100vh" pb={canOrder ? '190px' : 0} overflowX="clip">
-      <Hero settings={settings} dish={heroDish} table={canOrder ? menu.table : null} view3d={view3d} ar={ar} onExplore={explore} />
+      <Hero settings={settings} dish={heroDish} table={canOrder ? menu.table : null} ordering={Boolean(menu.features?.ordering)} view3d={view3d} ar={ar} onExplore={explore} />
+
+      {menu.features?.ordering && !canOrder && (
+        <Box px="clamp(16px, 4vw, 40px)" mt={{ base: 2, md: 0 }}>
+          <MotionBox
+            initial={reduce ? false : { opacity: 0, y: 16 }} whileInView={{ opacity: 1, y: 0 }} viewport={{ once: true }} transition={{ duration: 0.6, ease: EASE }}
+            maxW="640px" mx="auto" display="flex" alignItems="center" gap="16px" p="16px 20px" borderRadius="22px" border="1px solid" borderColor={C.lineHi}
+            bg="linear-gradient(135deg, rgba(212,168,75,.14), rgba(212,168,75,.04))" role="note"
+          >
+            <Box flex="none" w="46px" h="46px" borderRadius="14px" border="1px solid" borderColor={C.gold} display="grid" placeItems="center" color={C.gold} fontSize="22px" aria-hidden="true">▦</Box>
+            <Box>
+              <Text fontFamily={FONT.display} fontWeight={700} fontSize="22px" lineHeight={1.1} color={C.ivory}>Dining with us?</Text>
+              <Text mt="4px" fontSize="14px" color={C.mute}>Scan the QR code on your table to order from your phone and follow your order live.</Text>
+            </Box>
+          </MotionBox>
+        </Box>
+      )}
 
       <Signature dishes={signature} currency={settings.currency} view3d={view3d} qtyOf={qtyOf} onAdd={(id) => add(id, 1)} onRemove={(id) => add(id, -1)} onOpen={setOpen} />
 
@@ -91,9 +107,6 @@ export default function MenuClient({ menu, tableToken }) {
         />
 
         <Box maxW="1180px" mx="auto" px="clamp(14px, 4vw, 40px)" pb="30px">
-          {menu.features?.ordering && !canOrder && (
-            <Text mt={6} textAlign="center" fontSize="13px" letterSpacing=".08em" color={C.mute}>To place an order, scan the QR code on your table.</Text>
-          )}
           {sections.length === 0 ? (
             <Text color={C.mute} py="70px" textAlign="center" fontFamily={FONT.display} fontStyle="italic" fontSize="24px">
               {dishes.length ? 'No dishes match your search.' : 'The menu is being prepared. Please check back soon.'}
@@ -137,7 +150,7 @@ export default function MenuClient({ menu, tableToken }) {
       {canOrder && <OrderPanel slug={menu.slug} tableToken={tableToken} tableLabel={menu.table.label} dishes={dishes} cart={cart} setCart={setCart} currency={settings.currency} />}
       {open && (
         <DishModal
-          dish={open} currency={settings.currency} onClose={close} ar={ar}
+          dish={open} currency={settings.currency} onClose={close} ar={ar} orderHint={Boolean(menu.features?.ordering) && !canOrder}
           qty={qtyOf(open._id)} onAdd={() => add(open._id, 1)} onRemove={() => add(open._id, -1)}
         />
       )}

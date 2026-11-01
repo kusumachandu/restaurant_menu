@@ -58,3 +58,13 @@ npm run dev                      # API on :4000, web on :3000
 - 3D works best with top-down food photos. Each plate is created only while visible on
   screen and disposed when scrolled away, so long menus stay light on phones.
 - If WebGL is unavailable, the card falls back to a normal photo.
+
+### Cutouts and depth maps (memory)
+
+When a photo is uploaded, two ML models can prepare it for the 3D view: one removes the background (cutout) and one estimates depth. Each needs several hundred MB of RAM while it runs, which crashes a small instance (Render's 512 MB, for example), so:
+
+- They are **off by default** on Render and when `NODE_ENV=production`, and **on** on a developer machine. Override with `ENABLE_ML=1` (give the API at least 2 GB) or `ENABLE_ML=0`. `CUTOUT=off` / `DEPTH=off` switch one of them off.
+- Photos uploaded while they are off are simply saved, and the dish shows a normal rounded photo in 3D. To prepare them, run `npm run cutouts -w apps/api` from any machine with enough memory and `MONGODB_URI` pointing at the same database. It only touches photos that are not processed yet, so it is safe to run again and again.
+- When they are on, each model runs in its own process that exits after a minute of no work, so its memory is released.
+- The depth model (about 25 MB) is downloaded from Hugging Face on first use into `apps/api/.model-cache`.
+- On a 512 MB instance, also set `NODE_OPTIONS=--max-old-space-size=384`.

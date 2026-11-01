@@ -26,7 +26,7 @@ function Ornament() {
 }
 
 /** Opening screen: the restaurant's name, one dish floating in a pool of gold light, and a way into the menu. */
-export default function Hero({ settings, dish, table, view3d, ar, onExplore }) {
+export default function Hero({ settings, dish, table, ordering, view3d, ar, onExplore }) {
   const reduce = useReducedMotion();
   const { scrollY } = useScroll();
   const lift = useTransform(scrollY, [0, 700], [0, reduce ? 0 : 90]);
@@ -75,6 +75,7 @@ export default function Hero({ settings, dish, table, view3d, ar, onExplore }) {
         <MotionBox {...fadeUp(0.45)} mt={{ base: 7, md: 9 }}>
           <Flex wrap="wrap" justify="center" gap="10px">
             {table && <Chip>{table.label}</Chip>}
+            {!table && ordering && <Chip>Order from your table</Chip>}
             {view3d && <Chip>Live 3D dishes</Chip>}
             {ar && <Chip>See it on your table</Chip>}
           </Flex>

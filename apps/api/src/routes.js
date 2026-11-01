@@ -12,6 +12,7 @@ import { requireAuth, requireOwner, requireSuper, wrap } from './middleware.js';
 import { PLAN_NAMES, featuresOf } from './plans.js';
 import { makeCutout } from './cutout.js';
 import { makeDepth } from './depth.js';
+import { mlEnabled } from './ml.js';
 
 const router = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 8 * 1024 * 1024 } });
@@ -129,7 +130,7 @@ router.get('/r/:slug/orders', wrap(async (req, res) => {
   if (!restaurant || !ids.length) return res.json([]);
   const orders = await Order.find({ _id: { $in: ids }, restaurantId: restaurant._id, paidAt: null }).sort({ createdAt: 1 }).lean();
   res.json(orders.map((o) => ({
-    _id: String(o._id), status: o.status, total: o.total, tableLabel: o.tableLabel,
+    _id: String(o._id), status: o.status, total: o.total, tableLabel: o.tableLabel, createdAt: o.createdAt, updatedAt: o.updatedAt,
     items: o.items.map((i) => ({ name: i.name, price: i.price, qty: i.qty, imageId: i.imageId ? String(i.imageId) : null })),
   })));
 }));
@@ -137,7 +138,9 @@ router.get('/r/:slug/orders', wrap(async (req, res) => {
 // Resized copies are small (10-40 KB) and cached in memory, so repeat requests skip Mongo and sharp.
 const SIZES = [96, 240, 480, 800];
 const variants = new Map();
-const VARIANT_BUDGET = 64 * 1024 * 1024;
+const VARIANT_BUDGET = 24 * 1024 * 1024; // kept small: the API often runs on a 512 MB instance
+sharp.cache({ memory: 32, files: 0, items: 32 }); // libvips otherwise keeps a lot of decoded images around
+sharp.concurrency(1);
 let variantBytes = 0;
 
 function remember(key, buf) {
@@ -346,10 +349,10 @@ router.post('/admin/upload', own, upload.single('image'), wrap(async (req, res) 
     return res.status(400).json({ error: 'That file is not a valid image' });
   }
   let cutout = null;
-  let tried = true;
+  let tried = mlEnabled(); // while cutouts are off the photo is just saved; `npm run cutouts` (anywhere with more memory) does it later
   try { cutout = await makeCutout(data); } catch (e) { tried = false; console.warn('Cutout failed:', e.message); } // photo still works; `npm run cutouts` retries
   let depth = null;
-  let depthTried = true;
+  let depthTried = mlEnabled();
   try { depth = await makeDepth(data); } catch (e) { depthTried = false; console.warn('Depth failed:', e.message); }
   const img = await Image.create({ restaurantId: req.restaurant._id, data, contentType: 'image/jpeg', cutout, cutoutTried: tried, depth, depthTried });
   res.status(201).json({ imageId: String(img._id), cutout: Boolean(cutout), depth: Boolean(depth) });

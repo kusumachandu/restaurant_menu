@@ -1,5 +1,5 @@
-// Runs in its own process (started by depth.js). The depth model and the background-removal model each bundle their
-// own ONNX runtime, and two different versions cannot live in one process, so depth estimation is kept apart.
+// Runs in its own process (started by depth.js through ml.js) and exits when idle. The depth model and the
+// background-removal model each bundle their own ONNX runtime, and two different versions cannot share a process.
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
@@ -22,7 +22,7 @@ process.on('message', async ({ id, jpeg }) => {
       .resize(512, 512, { fit: 'inside' })
       .webp({ quality: 90 })
       .toBuffer();
-    process.send({ id, webp: webp.toString('base64') });
+    process.send({ id, result: webp.toString('base64') });
   } catch (e) {
     process.send({ id, error: String(e?.message || e) });
   }

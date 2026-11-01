@@ -89,15 +89,19 @@ export default function ArButton({ dish }) {
         mv.setAttribute('ar-placement', 'floor');
         mv.setAttribute('ar-scale', dish.modelId ? 'auto' : 'fixed');
         mv.setAttribute('shadow-intensity', '1');
+        mv.setAttribute('loading', 'eager'); // model-viewer otherwise waits until the element is on screen, and this one never is
+        mv.setAttribute('reveal', 'auto');
         // Kept off-screen but fully rendered: in WebXR the browser shows this element's own controls (placing prompt,
         // exit button) on top of the camera, and they would be invisible if the element were hidden or transparent.
         mv.style.cssText = 'position:fixed;left:-10000px;top:0;width:320px;height:320px;pointer-events:none';
         holder.current.appendChild(mv);
         viewer.current = mv;
+        let timer;
         await new Promise((resolve, reject) => {
           mv.addEventListener('load', resolve, { once: true });
           mv.addEventListener('error', () => reject(new Error('model failed to load')), { once: true });
-        });
+          timer = setTimeout(() => reject(new Error('model took too long')), 30000); // never leave the button spinning
+        }).finally(() => clearTimeout(timer));
         await mv.updateComplete;
         if (!dead) setState(mv.canActivateAR ? 'ready' : 'unsupported');
       } catch {
