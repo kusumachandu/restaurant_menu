@@ -77,7 +77,7 @@ export default function Signature({ dishes, currency, view3d, qtyOf, onAdd, onRe
                 aria-current={on ? 'true' : undefined}
               >
                 {view3d
-                  ? <Dish3D dish={d} currency={currency} look={d.look} onOpen={() => onOpen(d)} priority={i < 2} hint={false} />
+                  ? <Dish3D dish={d} currency={currency} look={d.look} onOpen={() => onOpen(d)} priority={i < 2} hint={false} useModel={on} />
                   : <Box aspectRatio={1} />}
                 <Flex justify="center" align="center" gap={2} mt={2}>
                   <VegMark veg={d.veg} />

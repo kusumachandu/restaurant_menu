@@ -76,11 +76,16 @@ export default function ArButton({ dish }) {
         mv.setAttribute('src', src || blobUrl);
         mv.setAttribute('alt', dish.name);
         mv.setAttribute('ar', '');
-        mv.setAttribute('ar-modes', 'webxr scene-viewer quick-look');
+        // Google's own AR viewer is the steadiest on Android, but it can only open a model that has a web address:
+        // an uploaded .glb has one, the model built from a photo does not (it lives in this page), so that one uses WebXR.
+        mv.setAttribute('ar-modes', dish.modelId ? 'scene-viewer webxr quick-look' : 'webxr scene-viewer quick-look');
+        mv.setAttribute('interaction-prompt', 'none');
         mv.setAttribute('ar-placement', 'floor');
         mv.setAttribute('ar-scale', dish.modelId ? 'auto' : 'fixed');
         mv.setAttribute('shadow-intensity', '1');
-        mv.style.cssText = 'position:absolute;width:1px;height:1px;opacity:0;pointer-events:none';
+        // Kept off-screen but fully rendered: in WebXR the browser shows this element's own controls (placing prompt,
+        // exit button) on top of the camera, and they would be invisible if the element were hidden or transparent.
+        mv.style.cssText = 'position:fixed;left:-10000px;top:0;width:320px;height:320px;pointer-events:none';
         holder.current.appendChild(mv);
         viewer.current = mv;
         await new Promise((resolve, reject) => {

@@ -4,6 +4,7 @@ import { Box, Image as ChakraImage, Text } from '@chakra-ui/react';
 import { BOWL, DOME, prepareDish } from '@/lib/dishMesh';
 import { resolveLook } from '@/lib/look';
 import { cutUrl, imgSrcSet, imgUrl } from '@/lib/img';
+import { loadDishModel } from '@/lib/dishModel';
 
 const TAU = Math.PI * 2;
 
@@ -13,6 +14,8 @@ const RAD = Math.PI / 180;
 const MAX_TILT = 0.95; // up/down, radians (about 54 degrees)
 const MAX_TURN = 1.15; // left/right (about 66 degrees)
 const RETURN_AFTER = 1400; // ms after letting go before it eases back to the front
+const MODEL_TILT = 0.42; // a real model is shown from slightly above, like a dish on a table
+const MODEL_RESUME = 2500; // ms after letting go before a real model's turntable starts again
 const COOL = [0.87, 0.92, 1];
 const WARM = [1, 0.85, 0.66];
 
@@ -21,15 +24,19 @@ const WARM = [1, 0.85, 0.66];
  *  - "card":   small, gently spinning, tilts toward the pointer; click opens the viewer.
  *  - "viewer": drag to turn it to any angle, pinch/scroll to zoom. Used in the menu's
  *              full-screen viewer and in the admin preview.
+ * A dish with an uploaded 3D model (.glb) shows that model instead, fully free to rotate, whenever `useModel`
+ * is true (default: in the viewer). Otherwise the photo is shaped into a solid (see lib/dishMesh.js).
  * `look` (lighting settings) is read every frame, so sliders update live without
  * rebuilding the scene. The WebGL scene exists only while the element is on screen.
  */
-export default function Dish3D({ dish, currency, look, mode = 'card', onOpen, apiRef, width = '100%', priority = false, hint = true, interactive = true }) {
+export default function Dish3D({ dish, currency, look, mode = 'card', onOpen, apiRef, width = '100%', priority = false, hint = true, interactive = true, useModel }) {
   const box = useRef(null);
   const lookRef = useRef(resolveLook(look));
-  const [failed, setFailed] = useState(!dish.imageId);
+  const [failed, setFailed] = useState(!dish.imageId && !dish.modelId);
+  const [modelFailed, setModelFailed] = useState(false);
   const [ready, setReady] = useState(false);
   const viewer = mode === 'viewer';
+  const asModel = Boolean(dish.modelId) && (useModel ?? viewer) && !modelFailed;
 
   lookRef.current = resolveLook(look);
 
@@ -42,11 +49,15 @@ export default function Dish3D({ dish, currency, look, mode = 'card', onOpen, ap
 
     async function start() {
       const my = ++gen;
-      // Load three.js and the photo in parallel. Cards need only a 480px texture.
-      const img = new Image();
-      img.src = dish.cutout ? cutUrl(dish.imageId, viewer ? 800 : 480) : imgUrl(dish.imageId, viewer ? 800 : 480);
-      let THREE;
-      try { [THREE] = await Promise.all([import('three'), img.decode()]); } catch { setFailed(true); return; }
+      // Load three.js and either the 3D model or the photo (cards need only a 480px texture), in parallel.
+      let THREE, img, modelRoot;
+      if (asModel) {
+        try { [THREE, modelRoot] = await Promise.all([import('three'), loadDishModel(imgUrl(dish.modelId))]); } catch { setModelFailed(true); return; }
+      } else {
+        img = new Image();
+        img.src = dish.cutout ? cutUrl(dish.imageId, viewer ? 800 : 480) : imgUrl(dish.imageId, viewer ? 800 : 480);
+        try { [THREE] = await Promise.all([import('three'), img.decode()]); } catch { setFailed(true); return; }
+      }
       if (my !== gen) return;
 
       let renderer;
@@ -55,6 +66,7 @@ export default function Dish3D({ dish, currency, look, mode = 'card', onOpen, ap
       } catch { setFailed(true); return; }
       renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
       renderer.outputColorSpace = THREE.SRGBColorSpace;
+      if (asModel) { renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.05; }
       el.insertBefore(renderer.domElement, el.firstChild);
 
       const scene = new THREE.Scene();
@@ -68,34 +80,53 @@ export default function Dish3D({ dish, currency, look, mode = 'card', onOpen, ap
       const group = new THREE.Group();
       scene.add(group);
 
-      // The dish itself is the object: its outline puffed into a solid shape, with a dark underside.
-      const prep = prepareDish(THREE, img, dish.cutout);
-      const photo = new THREE.CanvasTexture(prep.texture);
-      photo.colorSpace = THREE.SRGBColorSpace;
-      photo.anisotropy = 4;
-      const frontMat = new THREE.MeshStandardMaterial({
-        map: photo,
-        emissive: 0xffffff,
-        emissiveMap: photo,
-        emissiveIntensity: 0.6,
-        alphaTest: 0.5,
-        alphaToCoverage: true,
-        roughness: 0.65,
-      });
-      const front = new THREE.Mesh(prep.geometry, frontMat);
-      group.add(front);
+      let frontMat, front, body;
+      if (asModel) {
+        // A real 3D model: centred and scaled to fit, lit with a soft studio environment so its materials look right.
+        const box = new THREE.Box3().setFromObject(modelRoot);
+        const size = box.getSize(new THREE.Vector3());
+        const centre = box.getCenter(new THREE.Vector3());
+        modelRoot.position.sub(centre);
+        const pivot = new THREE.Group();
+        pivot.add(modelRoot);
+        pivot.scale.setScalar(1.75 / Math.max(size.x, size.y, size.z, 1e-6));
+        group.add(pivot);
+        const pm = new THREE.PMREMGenerator(renderer);
+        const { RoomEnvironment } = await import('three/examples/jsm/environments/RoomEnvironment.js');
+        if (my !== gen) { pm.dispose(); renderer.dispose(); renderer.domElement.remove(); return; }
+        scene.environment = pm.fromScene(new RoomEnvironment(), 0.04).texture;
+        scene.environmentIntensity = 0.9;
+        pm.dispose();
+      } else {
+        // The dish itself is the object: its outline puffed into a solid shape, with a dark underside.
+        const prep = prepareDish(THREE, img, dish.cutout);
+        const photo = new THREE.CanvasTexture(prep.texture);
+        photo.colorSpace = THREE.SRGBColorSpace;
+        photo.anisotropy = 4;
+        frontMat = new THREE.MeshStandardMaterial({
+          map: photo,
+          emissive: 0xffffff,
+          emissiveMap: photo,
+          emissiveIntensity: 0.6,
+          alphaTest: 0.5,
+          alphaToCoverage: true,
+          roughness: 0.65,
+        });
+        front = new THREE.Mesh(prep.geometry, frontMat);
+        group.add(front);
 
-      // The body under the food: a tapered bowl that wears the dish's own rim colours.
-      const bodyMat = new THREE.MeshStandardMaterial({
-        vertexColors: true, side: THREE.DoubleSide, alphaMap: new THREE.CanvasTexture(prep.mask), alphaTest: 0.5,
-        roughness: 0.5, emissive: 0x2a1c12,
-      });
-      const body = new THREE.Mesh(prep.underside, bodyMat);
-      group.add(body);
+        // The body under the food: a tapered bowl that wears the dish's own rim colours.
+        const bodyMat = new THREE.MeshStandardMaterial({
+          vertexColors: true, side: THREE.DoubleSide, alphaMap: new THREE.CanvasTexture(prep.mask), alphaTest: 0.5,
+          roughness: 0.5, emissive: 0x2a1c12,
+        });
+        body = new THREE.Mesh(prep.underside, bodyMat);
+        group.add(body);
+      }
 
       const s = {
         a: Math.random() * 0.5, hover: false, px: 0, py: 0,               // card mode
-        rx: 0, ry: 0, vx: 0, vy: 0, zoom: 1, auto: !reduce, target: null, t: 0, // viewer mode
+        rx: asModel ? MODEL_TILT : 0, ry: 0, vx: 0, vy: 0, zoom: 1, auto: !reduce, target: null, t: 0, // viewer mode
       };
       const ptrs = new Map();
       let pinch = 0;
@@ -137,7 +168,11 @@ export default function Dish3D({ dish, currency, look, mode = 'card', onOpen, ap
       };
       const onUp = (e) => {
         ptrs.delete(e.pointerId); pinch = 0;
-        if (!ptrs.size) { clearTimeout(settle); settle = setTimeout(() => { s.vx = s.vy = 0; s.target = { rx: 0, ry: 0, zoom: s.zoom }; }, RETURN_AFTER); }
+        if (ptrs.size) return;
+        clearTimeout(settle);
+        settle = asModel
+          ? setTimeout(() => { s.auto = !reduce; }, MODEL_RESUME) // a real model stays where you left it, then turns again
+          : setTimeout(() => { s.vx = s.vy = 0; s.target = { rx: 0, ry: 0, zoom: s.zoom }; }, RETURN_AFTER);
       };
       const onWheel = (e) => { e.preventDefault(); halt(); s.zoom = clampZoom(s.zoom * Math.exp(-e.deltaY * 0.0015)); };
       const onKey = (e) => {
@@ -158,7 +193,7 @@ export default function Dish3D({ dish, currency, look, mode = 'card', onOpen, ap
             reset: () => {
               s.auto = false;
               s.vx = s.vy = 0;
-              s.target = { rx: 0, ry: 0, zoom: 1 };
+              s.target = asModel ? { rx: MODEL_TILT, ry: Math.round(s.ry / TAU) * TAU, zoom: 1 } : { rx: 0, ry: 0, zoom: 1 };
             },
           };
         }
@@ -176,8 +211,9 @@ export default function Dish3D({ dish, currency, look, mode = 'card', onOpen, ap
       const applyLook = () => {
         const L = lookRef.current;
         const b = L.brightness;
-        hemi.intensity = L.ambient * b;
-        sun.intensity = L.key * b;
+        const k = asModel ? 0.3 : 1; // real materials need far less light than a photo does
+        hemi.intensity = L.ambient * b * k;
+        sun.intensity = L.key * b * k * 1.4;
         sun.color.copy(tint.setRGB(
           COOL[0] + (WARM[0] - COOL[0]) * L.warmth,
           COOL[1] + (WARM[1] - COOL[1]) * L.warmth,
@@ -185,11 +221,13 @@ export default function Dish3D({ dish, currency, look, mode = 'card', onOpen, ap
         ));
         const az = L.azimuth * RAD, elev = L.elevation * RAD;
         sun.position.set(8 * Math.cos(elev) * Math.sin(az), 8 * Math.sin(elev), 8 * Math.cos(elev) * Math.cos(az));
-        frontMat.emissiveIntensity = L.glow * b;
-        const rise = Math.max(0.05, L.depth / DOME);
-        front.scale.z = rise;
-        body.scale.z = rise; // the slider deepens the heap and the bowl together
-        frontMat.roughness = L.shine;
+        if (frontMat) {
+          frontMat.emissiveIntensity = L.glow * b;
+          const rise = Math.max(0.05, L.depth / DOME);
+          front.scale.z = rise;
+          body.scale.z = rise; // the slider deepens the heap and the bowl together
+          frontMat.roughness = L.shine;
+        }
         return L;
       };
 
@@ -211,6 +249,8 @@ export default function Dish3D({ dish, currency, look, mode = 'card', onOpen, ap
                 s.auto = !reduce;
                 s.t = 0;
               }
+            } else if (s.auto && asModel) {
+              s.ry += dt * L.spin * 0.8; // turntable
             } else if (s.auto) {
               s.t += dt * L.spin; // idle: a slow sway that shows the dish is 3D
               s.ry = Math.sin(s.t * 1.3) * 0.55;
@@ -220,8 +260,10 @@ export default function Dish3D({ dish, currency, look, mode = 'card', onOpen, ap
               s.vx *= 0.94; s.vy *= 0.94;
             }
           }
-          if (Math.abs(s.rx) > MAX_TILT) { s.rx = Math.sign(s.rx) * MAX_TILT; s.vx = 0; }
-          if (Math.abs(s.ry) > MAX_TURN) { s.ry = Math.sign(s.ry) * MAX_TURN; s.vy = 0; }
+          if (!asModel) { // a photo-based dish only holds up within a limited tilt; a real model can turn any way
+            if (Math.abs(s.rx) > MAX_TILT) { s.rx = Math.sign(s.rx) * MAX_TILT; s.vx = 0; }
+            if (Math.abs(s.ry) > MAX_TURN) { s.ry = Math.sign(s.ry) * MAX_TURN; s.vy = 0; }
+          }
           group.rotation.set(s.rx, s.ry, 0);
           cam.position.z = baseZ / s.zoom;
         } else {
@@ -229,7 +271,7 @@ export default function Dish3D({ dish, currency, look, mode = 'card', onOpen, ap
           if (!reduce) s.a += dt * L.spin;
           const sway = reduce ? 0 : Math.sin(s.a * 1.4) * 0.38;
           group.rotation.y += (sway + (s.hover ? s.px * 0.5 : 0) - group.rotation.y) * 0.15;
-          group.rotation.x += (Math.sin(s.a * 0.9) * (reduce ? 0 : 0.1) + (s.hover ? s.py * 0.3 : 0) - group.rotation.x) * 0.15;
+          group.rotation.x += ((asModel ? MODEL_TILT : 0) + Math.sin(s.a * 0.9) * (reduce ? 0 : 0.1) + (s.hover ? s.py * 0.3 : 0) - group.rotation.x) * 0.15;
         }
         renderer.render(scene, cam);
       };
@@ -254,8 +296,10 @@ export default function Dish3D({ dish, currency, look, mode = 'card', onOpen, ap
           o.geometry?.dispose();
           const m = o.material;
           if (m) {
-            ['map', 'emissiveMap', 'displacementMap', 'normalMap', 'alphaMap'].forEach((k) => m[k]?.dispose());
-            m.dispose();
+            (Array.isArray(m) ? m : [m]).forEach((mm) => {
+              Object.values(mm).forEach((v) => v?.isTexture && v.dispose());
+              mm.dispose();
+            });
           }
         });
         renderer.dispose();
@@ -272,7 +316,7 @@ export default function Dish3D({ dish, currency, look, mode = 'card', onOpen, ap
     const io = new IntersectionObserver(([e]) => (e.isIntersecting ? start() : stop()), { rootMargin: '150px' });
     io.observe(el);
     return () => { io.disconnect(); stop(); };
-  }, [dish.imageId, dish.cutout, failed, viewer, apiRef]);
+  }, [dish.imageId, dish.cutout, dish.modelId, asModel, failed, viewer, apiRef]);
 
   // The flat photo shows at once; once the 3D scene is live it fades out and the canvas takes over.
   const cut = dish.cutout && !failed;
