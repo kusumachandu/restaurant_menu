@@ -6,7 +6,7 @@ import {
 import { api } from '@/lib/client';
 import LookEditor from './LookEditor';
 
-const EMPTY = { name: '', description: '', price: '', category: 'Mains', veg: false, special: false, available: true, imageId: null, cutout: false, modelId: null, look: null };
+const EMPTY = { name: '', description: '', price: '', category: 'Mains', veg: false, special: false, available: true, imageId: null, cutout: false, depth: false, modelId: null, look: null };
 
 export default function DishManager() {
   const [dishes, setDishes] = useState([]);
@@ -46,8 +46,8 @@ export default function DishManager() {
     fd.append('image', file);
     setErr('');
     try {
-      const { imageId, cutout } = await api('/admin/upload', { method: 'POST', form: fd });
-      setEdit((d) => ({ ...d, imageId, cutout }));
+      const { imageId, cutout, depth } = await api('/admin/upload', { method: 'POST', form: fd });
+      setEdit((d) => ({ ...d, imageId, cutout, depth }));
     } catch (e2) {
       setErr(e2.message);
     }

@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Box, Button, Text, useToast } from '@chakra-ui/react';
 import { BOWL, prepareDish } from '@/lib/dishMesh';
-import { cutUrl, imgUrl } from '@/lib/img';
+import { cutUrl, depthUrl, imgUrl } from '@/lib/img';
 import { C } from './menu/ui';
 
 const MODEL_VIEWER = 'https://cdn.jsdelivr.net/npm/@google/model-viewer@3.5.0/dist/model-viewer.min.js';
@@ -28,7 +28,13 @@ async function buildPhotoModel(dish) {
   const img = new Image();
   img.src = dish.cutout ? cutUrl(dish.imageId, 800) : imgUrl(dish.imageId, 800);
   await img.decode();
-  const prep = prepareDish(THREE, img, dish.cutout);
+  let depth = null;
+  if (dish.depth) {
+    const d = new Image();
+    d.src = depthUrl(dish.imageId, 512);
+    depth = await d.decode().then(() => d, () => null);
+  }
+  const prep = prepareDish(THREE, img, dish.cutout, 512, 1.9, { depth, grid: 150 });
   const photo = new THREE.CanvasTexture(prep.texture);
   photo.colorSpace = THREE.SRGBColorSpace;
 
@@ -104,7 +110,7 @@ export default function ArButton({ dish }) {
       viewer.current = null;
       if (blobUrl) URL.revokeObjectURL(blobUrl);
     };
-  }, [dish.modelId, dish.imageId, dish.cutout, dish.name]);
+  }, [dish.modelId, dish.imageId, dish.cutout, dish.depth, dish.name]);
 
   function open() {
     if (state === 'ready') { viewer.current.activateAR(); return; }

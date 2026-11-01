@@ -45,6 +45,8 @@ export const Image = model(
       contentType: String,
       cutout: { type: Buffer, default: null },        // transparent WebP of just the dish, see cutout.js
       cutoutTried: { type: Boolean, default: false }, // so the backfill does not retry photos that cannot be cut out
+      depth: { type: Buffer, default: null },         // grayscale depth map (brighter = nearer), see depth.js
+      depthTried: { type: Boolean, default: false },
     },
     { timestamps: true }
   )

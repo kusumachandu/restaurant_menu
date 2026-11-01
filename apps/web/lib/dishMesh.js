@@ -2,10 +2,11 @@
 //  - With a cutout (background removed): the dish's own outline, with the food heaped on top and a tapered bowl
 //    body underneath, so it also looks right from the side (a flat top-down photo alone looks like a thin disc).
 //  - Without one: the photo cropped to a soft circle.
+//  - With a depth map as well (see apps/api/src/depth.js), each part of the food gets its own height: the chicken leg
+//    stands out of the rice, every ball is round. The outline still decides the overall shape.
 // Used by the 3D viewer (Dish3D) and by the AR model (ArButton).
 export const DOME = 0.16; // full height of the food dome at the default lighting depth
 export const BOWL = 0.34; // how deep the body under it goes
-const G = 136;            // grid cells per side
 
 const canvas = (w) => {
   const c = document.createElement('canvas');
@@ -40,11 +41,13 @@ function boxBlur(src, n, r) {
  * @param img     a decoded <img> (the cutout, or the plain photo)
  * @param cutout  true when `img` has a transparent background
  * @param size    texture size in px
+ * @param opts    { depth: decoded <img> of the depth map | null, grid: cells per side (more = finer relief, heavier) }
  * @returns {{ texture: HTMLCanvasElement, mask: HTMLCanvasElement, geometry: THREE.BufferGeometry, underside: THREE.BufferGeometry, size: number }}
  *   geometry (the food) is flat in x/y (a `size` square, centred) with z = 0..DOME; underside is the bowl body, z = 0..-BOWL,
  *   narrowing towards the bottom. Both share the texture, which carries colour and alpha.
  */
-export function prepareDish(THREE, img, cutout, size = 512, extent = 1.9) {
+export function prepareDish(THREE, img, cutout, size = 512, extent = 1.9, opts = {}) {
+  const G = opts.grid || 136; // grid cells per side
   const iw = img.naturalWidth, ih = img.naturalHeight;
 
   // Square crop: tight around the dish for a cutout, the centre of the photo otherwise.
@@ -94,6 +97,27 @@ export function prepareDish(THREE, img, cutout, size = 512, extent = 1.9) {
   }
   const rim = rc ? [rr / rc / 255, rg / rc / 255, rb / rc / 255] : [0.55, 0.4, 0.28];
 
+  // Relief from the depth map: the same crop of the photo, stretched so the dish itself spans the full height range.
+  let relief = null;
+  if (opts.depth) {
+    const dw = opts.depth.naturalWidth, dh = opts.depth.naturalHeight;
+    const dc = canvas(n);
+    const dx = dc.getContext('2d', { willReadFrequently: true });
+    dx.drawImage(opts.depth, (sx / iw) * dw, (sy / ih) * dh, (ss / iw) * dw, (ss / ih) * dh, 0, 0, n, n);
+    const dd = dx.getImageData(0, 0, n, n).data;
+    const vals = [];
+    const raw = new Float32Array(n * n);
+    for (let k = 0; k < n * n; k++) { raw[k] = dd[k * 4] / 255; if (alpha[k]) vals.push(raw[k]); }
+    if (vals.length > 50) {
+      vals.sort((a, b) => a - b);
+      const lo = vals[Math.floor(vals.length * 0.03)], hi = vals[Math.floor(vals.length * 0.99)];
+      const span = Math.max(hi - lo, 0.05);
+      for (let k = 0; k < n * n; k++) raw[k] = Math.min(1, Math.max(0, (raw[k] - lo) / span));
+      relief = boxBlur(raw, n, 1);
+    }
+  }
+  const amp = relief ? DOME * 2.2 : DOME;
+
   const pos = new Float32Array(n * n * 3);
   const low = new Float32Array(n * n * 3);
   const tint = new Float32Array(n * n * 3);
@@ -104,7 +128,13 @@ export function prepareDish(THREE, img, cutout, size = 512, extent = 1.9) {
       const inside = Math.min(1, Math.max(0, (soft[k] - 0.5) * 2));
       pos[k * 3] = (i / G - 0.5) * extent;
       pos[k * 3 + 1] = (0.5 - j / G) * extent;
-      pos[k * 3 + 2] = Math.pow(inside, 0.7) * DOME; // continuous, so the rim stays smooth when the dish is tilted
+      const dome = Math.pow(inside, 0.7); // continuous, so the rim stays smooth when the dish is tilted
+      if (relief) {
+        const edge = Math.min(1, inside / 0.35);
+        pos[k * 3 + 2] = amp * (0.22 * dome + 0.78 * relief[k] * edge * edge * (3 - 2 * edge)); // fades to the rim, no cliff
+      } else {
+        pos[k * 3 + 2] = dome * DOME;
+      }
       // Bowl body: from the rim the wall drops and narrows towards a flat base, like a real bowl.
       // `t` is a gentle, wide field; the taper is linear in it so the wall cannot fold over itself.
       const t = Math.min(1, Math.max(0, (wide[k] - 0.5) * 2));

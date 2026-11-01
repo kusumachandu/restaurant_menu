@@ -11,6 +11,7 @@ import { Admin, Dish, Image, ORDER_STATUSES, Order, Restaurant, Table } from './
 import { requireAuth, requireOwner, requireSuper, wrap } from './middleware.js';
 import { PLAN_NAMES, featuresOf } from './plans.js';
 import { makeCutout } from './cutout.js';
+import { makeDepth } from './depth.js';
 
 const router = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 8 * 1024 * 1024 } });
@@ -55,14 +56,18 @@ const slugSchema = z.string().trim().toLowerCase().regex(/^[a-z0-9][a-z0-9-]{1,3
 const passwordSchema = z.string().min(8).max(100);
 
 const publicSettings = (r) => ({ name: r.name, tagline: r.tagline, currency: r.currency });
-const dishOut = (d, cut = new Set()) => ({
+const dishOut = (d, cut = { cutout: new Set(), depth: new Set() }) => ({
   ...d, _id: String(d._id), imageId: d.imageId ? String(d.imageId) : null, modelId: d.modelId ? String(d.modelId) : null,
-  cutout: Boolean(d.imageId && cut.has(String(d.imageId))), // the photo has its background removed
+  cutout: Boolean(d.imageId && cut.cutout.has(String(d.imageId))), // the photo has its background removed
+  depth: Boolean(d.imageId && cut.depth.has(String(d.imageId))),   // the photo has a depth map
 });
-// Ids of the dishes' photos that have a cutout (without loading the image data).
-const cutoutIds = async (dishes) => new Set(
-  (await Image.find({ _id: { $in: dishes.map((d) => d.imageId).filter(Boolean) }, cutout: { $ne: null } }).select('_id').lean()).map((i) => String(i._id))
-);
+// Which of the dishes' photos have a cutout and a depth map (without loading the image data).
+const cutoutIds = async (dishes) => {
+  const ids = dishes.map((d) => d.imageId).filter(Boolean);
+  const has = async (field) => new Set((await Image.find({ _id: { $in: ids }, [field]: { $ne: null } }).select('_id').lean()).map((i) => String(i._id)));
+  const [cutout, depth] = await Promise.all([has('cutout'), has('depth')]);
+  return { cutout, depth };
+};
 
 /* ---------- public ---------- */
 router.get('/r/:slug/menu', wrap(async (req, res) => {
@@ -150,9 +155,10 @@ router.get('/images/:id', wrap(async (req, res) => {
   const want = Number(req.query.w);
   const w = SIZES.find((s) => s >= want); // undefined => original size
   const cut = req.query.cut === '1';
+  const depth = req.query.depth === '1';
   res.set('Cache-Control', 'public, max-age=31536000, immutable');
 
-  const key = w ? `${req.params.id}:${cut ? 'c' : 'p'}:${w}` : null;
+  const key = w ? `${req.params.id}:${depth ? 'd' : cut ? 'c' : 'p'}:${w}` : null;
   if (key && variants.has(key)) {
     const hit = variants.get(key);
     variants.delete(key); variants.set(key, hit); // refresh recency
@@ -160,6 +166,15 @@ router.get('/images/:id', wrap(async (req, res) => {
     return res.send(hit);
   }
 
+  if (depth) {
+    const d = await Image.findById(req.params.id).select('depth');
+    if (!d?.depth) return res.status(404).end();
+    res.set('Content-Type', 'image/webp');
+    if (!w) return res.send(d.depth);
+    const out = await sharp(d.depth).resize(w, w, { fit: 'inside' }).webp({ quality: 90 }).toBuffer();
+    remember(key, out);
+    return res.send(out);
+  }
   const img = await Image.findById(req.params.id).select(cut ? 'cutout' : 'data contentType');
   if (!img || (cut && !img.cutout)) return res.status(404).end();
   if (cut) {
@@ -333,8 +348,11 @@ router.post('/admin/upload', own, upload.single('image'), wrap(async (req, res) 
   let cutout = null;
   let tried = true;
   try { cutout = await makeCutout(data); } catch (e) { tried = false; console.warn('Cutout failed:', e.message); } // photo still works; `npm run cutouts` retries
-  const img = await Image.create({ restaurantId: req.restaurant._id, data, contentType: 'image/jpeg', cutout, cutoutTried: tried });
-  res.status(201).json({ imageId: String(img._id), cutout: Boolean(cutout) });
+  let depth = null;
+  let depthTried = true;
+  try { depth = await makeDepth(data); } catch (e) { depthTried = false; console.warn('Depth failed:', e.message); }
+  const img = await Image.create({ restaurantId: req.restaurant._id, data, contentType: 'image/jpeg', cutout, cutoutTried: tried, depth, depthTried });
+  res.status(201).json({ imageId: String(img._id), cutout: Boolean(cutout), depth: Boolean(depth) });
 }));
 
 // Optional real 3D model of a dish (binary glTF), shown in AR on the customer's table.

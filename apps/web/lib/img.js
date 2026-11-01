@@ -6,3 +6,6 @@ export const imgSrcSet = (id) => `${imgUrl(id, 240)} 240w, ${imgUrl(id, 480)} 48
 
 // The dish with its background removed (transparent WebP), for dishes where `dish.cutout` is true.
 export const cutUrl = (id, w) => `/api/images/${id}?cut=1${w ? `&w=${w}` : ''}`;
+
+// Depth map of the photo (brighter = nearer), for dishes where `dish.depth` is true.
+export const depthUrl = (id, w) => `/api/images/${id}?depth=1${w ? `&w=${w}` : ''}`;
