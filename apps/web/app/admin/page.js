@@ -8,10 +8,11 @@ import SettingsForm from '@/components/admin/SettingsForm';
 import QrCard from '@/components/admin/QrCard';
 import TablesManager from '@/components/admin/TablesManager';
 import OrdersBoard from '@/components/admin/OrdersBoard';
+import CustomersList from '@/components/admin/CustomersList';
 
 const TABS = [['dishes', 'Dishes'], ['settings', 'Restaurant'], ['qr', 'QR code']];
 // Only on plans that include ordering.
-const ORDER_TABS = [['orders', 'Orders'], ['tables', 'Tables']];
+const ORDER_TABS = [['orders', 'Orders'], ['tables', 'Tables'], ['customers', 'Guests']];
 
 export default function Admin() {
   const router = useRouter();
@@ -45,6 +46,7 @@ export default function Admin() {
       </Flex>
       {tab === 'orders' && <OrdersBoard currency={info?.currency || '₹'} restaurantName={info?.name || ''} />}
       {tab === 'tables' && <TablesManager slug={info.slug} />}
+      {tab === 'customers' && <CustomersList />}
       {tab === 'dishes' && <DishManager />}
       {tab === 'settings' && <SettingsForm />}
       {tab === 'qr' && <QrCard />}

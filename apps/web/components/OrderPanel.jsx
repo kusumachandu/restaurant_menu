@@ -17,12 +17,12 @@ async function call(path, body) {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
   });
   const json = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(json.error || 'Something went wrong. Please try again.');
+  if (!res.ok) throw Object.assign(new Error(json.error || 'Something went wrong. Please try again.'), { code: json.code });
   return json;
 }
 
 // Cart bar + checkout drawer + live order tracker for a customer sitting at a table.
-export default function OrderPanel({ slug, tableToken, tableLabel, dishes, cart, setCart, currency }) {
+export default function OrderPanel({ slug, tableToken, tableLabel, dishes, cart, setCart, currency, sessionToken, onSessionEnded }) {
   const { isOpen, onOpen, onClose } = useDisclosure();
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
@@ -43,9 +43,19 @@ export default function OrderPanel({ slug, tableToken, tableLabel, dishes, cart,
     try {
       const list = await call(`/r/${slug}/orders?ids=${ids.join(',')}`);
       saved.set(slug, list.map((o) => o._id)); // forget orders that were paid
-      setOrders(list);
+      const at = Date.now(); // lets the tracker count the cancel grace period down between refreshes
+      setOrders(list.map((o) => ({ ...o, fetchedAt: at })));
     } catch { /* keep what we have; try again on the next tick */ }
   }, [slug]);
+
+  const sendOrderNow = useCallback(async (id) => {
+    try { await call(`/r/${slug}/orders/${id}/send`, {}); } finally { await refresh(); }
+  }, [slug, refresh]);
+
+  // Throws the server's reason (for example "already sent to the kitchen") for the tracker to show.
+  const cancelOrder = useCallback(async (id) => {
+    try { await call(`/r/${slug}/orders/${id}/cancel`, {}); } finally { await refresh(); }
+  }, [slug, refresh]);
 
   // Follow all orders for this table, also after a page reload.
   useEffect(() => {
@@ -67,12 +77,15 @@ export default function OrderPanel({ slug, tableToken, tableLabel, dishes, cart,
     setBusy(true); setErr('');
     try {
       const items = lines.map((l) => ({ dishId: l._id, qty: l.qty }));
-      const placed = await call(`/r/${slug}/orders`, { table: tableToken, note, items });
+      const placed = await call(`/r/${slug}/orders`, { table: tableToken, note, items, session: sessionToken });
       saved.set(slug, [...saved.get(slug), placed._id]);
       setCart({}); setNote(''); onClose();
       await refresh();
       setOpenNonce((n) => n + 1);
-    } catch (e) { setErr(e.message); } finally { setBusy(false); }
+    } catch (e) {
+      // The table was paid (or the check-in is no longer valid): the guest verifies again, and their cart is kept.
+      if (e.code === 'checkin') { onClose(); onSessionEnded?.(); } else setErr(e.message);
+    } finally { setBusy(false); }
   }
 
   return (
@@ -93,7 +106,7 @@ export default function OrderPanel({ slug, tableToken, tableLabel, dishes, cart,
       </Box>
 
       <OrderTracker
-        orders={orders} tableLabel={tableLabel} currency={currency} raised={count > 0} hidden={isOpen} openNonce={openNonce}
+        orders={orders} tableLabel={tableLabel} currency={currency} raised={count > 0} hidden={isOpen} openNonce={openNonce} onCancel={cancelOrder} onSend={sendOrderNow}
         onOrderMore={() => document.getElementById('menu')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
       />
 

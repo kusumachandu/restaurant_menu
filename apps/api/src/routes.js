@@ -7,7 +7,9 @@ import rateLimit from 'express-rate-limit';
 import { z } from 'zod';
 import { config } from './config.js';
 import crypto from 'node:crypto';
-import { Admin, Dish, Image, ORDER_STATUSES, Order, Restaurant, Table } from './models.js';
+import { Admin, Customer, Dish, Image, ORDER_STATUSES, Order, OtpCode, Restaurant, Table, TableSession, WebhookEvent } from './models.js';
+import { sendOtp, smsIsLive } from './sms.js';
+import { checkWebhookUrl, emit, newSecret, retryEvent, sendTest } from './webhooks.js';
 import { requireAuth, requireOwner, requireSuper, wrap } from './middleware.js';
 import { PLAN_NAMES, featuresOf } from './plans.js';
 import { makeCutout } from './cutout.js';
@@ -51,6 +53,8 @@ const settingsSchema = z.object({
   name: z.string().trim().min(1).max(80),
   tagline: z.string().max(160).default(''),
   currency: z.string().max(4).default('₹'),
+  orderHoldSeconds: z.coerce.number().int().min(0).max(300).optional(),
+  customerCheckIn: z.boolean().optional(),
 });
 
 const slugSchema = z.string().trim().toLowerCase().regex(/^[a-z0-9][a-z0-9-]{1,38}[a-z0-9]$/, 'Use 3-40 letters, numbers or dashes');
@@ -87,7 +91,7 @@ router.get('/r/:slug/menu', wrap(async (req, res) => {
   res.json({
     slug: restaurant.slug,
     settings: publicSettings(restaurant),
-    features: { view3d: features.view3d, ar: features.ar, ordering: features.ordering },
+    features: { view3d: features.view3d, ar: features.ar, ordering: features.ordering, checkIn: Boolean(features.ordering && restaurant.customerCheckIn) },
     table: t ? { label: t.label } : null,
     categories,
     dishes: dishes.map((d) => dishOut(features.lookEditor ? d : { ...d, look: null }, cut)),
@@ -95,7 +99,133 @@ router.get('/r/:slug/menu', wrap(async (req, res) => {
 }));
 
 const orderLimiter = rateLimit({ windowMs: 10 * 60 * 1000, limit: 30, standardHeaders: true, legacyHeaders: false });
+const otpLimiter = rateLimit({ windowMs: 10 * 60 * 1000, limit: 15, standardHeaders: true, legacyHeaders: false, message: { error: 'Too many attempts. Please try again in a few minutes.' } });
+
+/* ---------- guest check-in (restaurants that ask guests for a verified mobile number) ---------- */
+// Indian mobile numbers, with or without +91 / 0. Returns +91XXXXXXXXXX, or null when it is not a valid number.
+function normalizePhone(raw) {
+  let d = String(raw || '').replace(/\D/g, '');
+  if (d.length === 12 && d.startsWith('91')) d = d.slice(2);
+  else if (d.length === 11 && d.startsWith('0')) d = d.slice(1);
+  return /^[6-9]\d{9}$/.test(d) ? `+91${d}` : null;
+}
+const maskPhone = (p) => `${p.slice(0, 3)} ${p.slice(3, 5)}•••••${p.slice(-3)}`;
+const guestSecret = () => `${config.jwtSecret}:guest`;
+const otpHash = (restaurantId, phone, code) => crypto.createHash('sha256').update(`${restaurantId}:${phone}:${code}:${config.jwtSecret}`).digest('hex');
+
+// The guest's check-in lasts until their table is settled; a token for a closed session no longer works.
+async function sessionFromToken(token, restaurantId) {
+  if (!token) return null;
+  try {
+    const { sid } = jwt.verify(String(token), guestSecret());
+    return await TableSession.findOne({ _id: sid, restaurantId, endedAt: null });
+  } catch { return null; }
+}
+
+// Shared by the check-in routes: the restaurant must have check-in switched on, and the table must be real.
+async function checkInContext(req) {
+  const restaurant = await Restaurant.findOne({ slug: req.params.slug.toLowerCase(), active: true });
+  if (!restaurant || !featuresOf(restaurant.plan).ordering || !restaurant.customerCheckIn) return { error: [404, 'Check-in is not available'] };
+  const table = await Table.findOne({ restaurantId: restaurant._id, token: String(req.body?.table || req.query.t || ''), active: true });
+  if (!table) return { error: [400, 'This table is not valid. Please scan the QR code on your table again.'] };
+  return { restaurant, table };
+}
+
+router.post('/r/:slug/checkin/otp', otpLimiter, wrap(async (req, res) => {
+  const ctx = await checkInContext(req);
+  if (ctx.error) return res.status(ctx.error[0]).json({ error: ctx.error[1] });
+  const phone = normalizePhone(req.body?.phone);
+  if (!phone) return res.status(400).json({ error: 'Enter a valid 10-digit mobile number.' });
+
+  const recent = await OtpCode.find({ restaurantId: ctx.restaurant._id, phone }).sort({ createdAt: -1 }).limit(5).lean();
+  if (recent[0] && Date.now() - new Date(recent[0].createdAt).getTime() < 30000) return res.status(429).json({ error: 'Please wait a few seconds before asking for another code.' });
+  if (recent.length >= 4) return res.status(429).json({ error: 'Too many codes were requested for this number. Please try again in a few minutes.' });
+
+  const code = String(crypto.randomInt(100000, 1000000));
+  const saved = await OtpCode.create({ restaurantId: ctx.restaurant._id, phone, codeHash: otpHash(ctx.restaurant._id, phone, code), expiresAt: new Date(Date.now() + 5 * 60 * 1000) });
+  try { await sendOtp(phone, code); } catch (e) {
+    console.error('otp send failed:', e.message);
+    await saved.deleteOne();
+    return res.status(502).json({ error: 'We could not send the SMS right now. Please try again, or ask the staff.' });
+  }
+  // With the console provider (development) the code is also returned, so it can be tried without a phone.
+  res.json({ ok: true, resendIn: 30, ...(smsIsLive() ? {} : { devCode: code }) });
+}));
+
+const verifySchema = z.object({
+  table: z.string().min(1).max(64),
+  phone: z.string().max(20),
+  code: z.string().regex(/^\d{6}$/, 'Enter the 6-digit code'),
+  guests: z.coerce.number().int().min(1, 'Tell us how many people are seated').max(50),
+  otherPhones: z.array(z.string().max(20)).max(20).default([]),
+  consent: z.literal(true, { errorMap: () => ({ message: 'Please agree to share your details with the restaurant.' }) }),
+});
+
+router.post('/r/:slug/checkin/verify', otpLimiter, wrap(async (req, res) => {
+  const ctx = await checkInContext(req);
+  if (ctx.error) return res.status(ctx.error[0]).json({ error: ctx.error[1] });
+  const body = verifySchema.parse(req.body);
+  const { restaurant, table } = ctx;
+  const phone = normalizePhone(body.phone);
+  if (!phone) return res.status(400).json({ error: 'Enter a valid 10-digit mobile number.' });
+  const others = [];
+  for (const raw of body.otherPhones.map((p) => p.trim()).filter(Boolean)) {
+    const p = normalizePhone(raw);
+    if (!p) return res.status(400).json({ error: `"${raw}" is not a valid mobile number.` });
+    if (p !== phone && !others.includes(p)) others.push(p);
+  }
+
+  const otp = await OtpCode.findOne({ restaurantId: restaurant._id, phone, expiresAt: { $gt: new Date() } }).sort({ createdAt: -1 });
+  if (!otp || otp.attempts >= 5) return res.status(400).json({ error: 'That code has expired. Please ask for a new one.' });
+  const a = Buffer.from(otpHash(restaurant._id, phone, body.code)); const b = Buffer.from(otp.codeHash);
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+    await OtpCode.updateOne({ _id: otp._id }, { $inc: { attempts: 1 } });
+    return res.status(400).json({ error: 'That code is not right. Please check it and try again.' });
+  }
+  await OtpCode.deleteMany({ restaurantId: restaurant._id, phone });
+
+  // The same person opening the menu again at the same table continues their session instead of starting another.
+  let session = await TableSession.findOne({ restaurantId: restaurant._id, tableId: table._id, phone, endedAt: null });
+  const fresh = !session;
+  const known = session ? [...session.otherPhones] : []; // numbers already counted for this visit
+  if (session) { session.guests = body.guests; session.otherPhones = others; await session.save(); }
+  else session = await TableSession.create({ restaurantId: restaurant._id, tableId: table._id, tableLabel: table.label, phone, guests: body.guests, otherPhones: others });
+  const now = new Date();
+  const visit = { $set: { lastGuests: body.guests, lastTable: table.label, lastVisitAt: now } };
+  if (fresh) {
+    await Customer.updateOne(
+      { restaurantId: restaurant._id, phone },
+      { $inc: { visits: 1 }, $set: { ...visit.$set, verified: true }, $setOnInsert: { firstVisitAt: now } }, { upsert: true });
+  }
+  // The other guests' numbers are saved as guests of their own, marked unverified (a number already verified stays verified).
+  for (const p of others.filter((o) => !known.includes(o))) {
+    await Customer.updateOne(
+      { restaurantId: restaurant._id, phone: p },
+      { $inc: { visits: 1 }, ...visit, $setOnInsert: { firstVisitAt: now, verified: false } }, { upsert: true });
+  }
+  if (fresh) {
+    emit(restaurant._id, 'customer.checked_in', { sessionId: String(session._id), table: table.label, phone, guests: body.guests, otherPhones: others, checkedInAt: session.createdAt });
+  }
+  const token = jwt.sign({ sid: String(session._id) }, guestSecret(), { expiresIn: '1d' });
+  res.json({ token, guests: session.guests, phone: maskPhone(phone) });
+}));
+
+// Lets the page check, when it opens, that the guest's earlier check-in still stands.
+router.get('/r/:slug/checkin/session', wrap(async (req, res) => {
+  const restaurant = await Restaurant.findOne({ slug: req.params.slug.toLowerCase() }).select('_id');
+  const session = restaurant && await sessionFromToken(req.get('x-guest-token'), restaurant._id);
+  if (!session) return res.status(401).json({ error: 'Please check in again.' });
+  res.json({ valid: true, guests: session.guests, phone: maskPhone(session.phone), table: session.tableLabel });
+}));
+
+const orderData = (o) => ({
+  orderId: String(o._id), table: o.tableLabel, status: o.status, total: o.total, note: o.note || '',
+  items: o.items.map((i) => ({ name: i.name, price: i.price, qty: i.qty })),
+  customer: o.customerPhone ? { phone: o.customerPhone, guests: o.guests } : null, placedAt: o.createdAt,
+});
+
 const orderSchema = z.object({
+  session: z.string().max(2000).optional(),
   table: z.string().min(1).max(64),
   note: z.string().trim().max(200).default(''),
   items: z.array(z.object({ dishId: objectId, qty: z.coerce.number().int().min(1).max(20) })).min(1).max(40),
@@ -115,11 +245,24 @@ router.post('/r/:slug/orders', orderLimiter, wrap(async (req, res) => {
   if (dishes.length !== qtyById.size) return res.status(400).json({ error: 'Some dishes are no longer available. Please review your cart.' });
 
   const items = dishes.map((d) => ({ dishId: d._id, name: d.name, price: d.price, qty: qtyById.get(String(d._id)), imageId: d.imageId || undefined }));
+  // A restaurant that asks for check-in only takes orders from a guest whose verified session is open at this table.
+  let session = null;
+  if (restaurant.customerCheckIn) {
+    session = await sessionFromToken(body.session, restaurant._id);
+    if (!session || String(session.tableId) !== String(table._id)) {
+      return res.status(401).json({ error: 'Please verify your mobile number to order.', code: 'checkin' });
+    }
+  }
+
+  const hold = restaurant.orderHoldSeconds ?? 120;
   const order = await Order.create({
     restaurantId: restaurant._id, tableId: table._id, tableLabel: table.label, items, note: body.note,
     total: items.reduce((sum, i) => sum + i.price * i.qty, 0),
+    releaseAt: new Date(Date.now() + hold * 1000),
+    ...(session ? { sessionId: session._id, customerPhone: session.phone, guests: session.guests } : {}),
   });
-  res.status(201).json({ _id: String(order._id), status: order.status, total: order.total });
+  emit(restaurant._id, 'order.placed', orderData(order));
+  res.status(201).json({ _id: String(order._id), status: order.status, total: order.total, holdLeft: hold });
 }));
 
 // Lets the customer's phone follow its orders; the unguessable ids are the only key.
@@ -128,11 +271,54 @@ router.get('/r/:slug/orders', wrap(async (req, res) => {
   const ids = String(req.query.ids || '').split(',').filter((id) => objectId.safeParse(id).success).slice(0, 30);
   const restaurant = await Restaurant.findOne({ slug: req.params.slug.toLowerCase() }).select('_id');
   if (!restaurant || !ids.length) return res.json([]);
-  const orders = await Order.find({ _id: { $in: ids }, restaurantId: restaurant._id, paidAt: null }).sort({ createdAt: 1 }).lean();
+  const found = await Order.find({ _id: { $in: ids }, restaurantId: restaurant._id, paidAt: null }).sort({ createdAt: 1 }).lean();
+  // A cancelled order is shown for a minute so the guest sees it went through, then it is dropped (and forgotten by the phone).
+  const orders = found.filter((o) => o.status !== 'cancelled' || Date.now() - new Date(o.cancelledAt || o.updatedAt).getTime() < 60000);
   res.json(orders.map((o) => ({
     _id: String(o._id), status: o.status, total: o.total, tableLabel: o.tableLabel, createdAt: o.createdAt, updatedAt: o.updatedAt,
+    cancelledBy: o.cancelledBy,
+    holdLeft: holdLeft(o), canCancel: holdLeft(o) > 0,
     items: o.items.map((i) => ({ name: i.name, price: i.price, qty: i.qty, imageId: i.imageId ? String(i.imageId) : null })),
   })));
+}));
+
+// A new order is held back from the kitchen until releaseAt. Until then the guest can cancel it or send it early; after
+// that only the staff can cancel it. Orders from before this existed have no releaseAt and count as already sent.
+// Seconds of the hold left (0 once the kitchen can see the order).
+const holdLeft = (o) => (o.status === 'new' && !o.paidAt && o.releaseAt ? Math.max(0, Math.ceil((new Date(o.releaseAt).getTime() - Date.now()) / 1000)) : 0);
+const released = () => ({ $or: [{ releaseAt: null }, { releaseAt: { $lte: new Date() } }] });
+
+// The check and the change are one atomic update, so the moment the hold ends exactly one of "cancel" and "sent" wins.
+// The kitchen never saw the order, so there is nothing for it to acknowledge.
+router.post('/r/:slug/orders/:id/cancel', orderLimiter, wrap(async (req, res) => {
+  if (!objectId.safeParse(req.params.id).success) return res.status(404).json({ error: 'Order not found' });
+  const restaurant = await Restaurant.findOne({ slug: req.params.slug.toLowerCase() }).select('_id');
+  if (!restaurant) return res.status(404).json({ error: 'Order not found' });
+  const now = new Date();
+  const order = await Order.findOneAndUpdate(
+    { _id: req.params.id, restaurantId: restaurant._id, paidAt: null, status: 'new', releaseAt: { $gt: now } },
+    { status: 'cancelled', cancelledBy: 'customer', cancelledAt: now, cancelAckAt: now },
+    { new: true }
+  );
+  if (order) {
+    emit(restaurant._id, 'order.cancelled', { ...orderData(order), cancelledBy: 'customer' });
+    return res.json({ _id: String(order._id), status: order.status });
+  }
+  const current = await Order.findOne({ _id: req.params.id, restaurantId: restaurant._id }).select('status');
+  if (!current) return res.status(404).json({ error: 'Order not found' });
+  const why = current.status === 'cancelled' ? 'This order is already cancelled.'
+    : 'This order has already been sent to the kitchen, so it can no longer be cancelled here. Please ask the staff.';
+  res.status(409).json({ error: why });
+}));
+
+// "Send now": the guest is sure, so the kitchen gets the order without waiting for the hold to run out.
+router.post('/r/:slug/orders/:id/send', orderLimiter, wrap(async (req, res) => {
+  if (!objectId.safeParse(req.params.id).success) return res.status(404).json({ error: 'Order not found' });
+  const restaurant = await Restaurant.findOne({ slug: req.params.slug.toLowerCase() }).select('_id');
+  if (!restaurant) return res.status(404).json({ error: 'Order not found' });
+  await Order.updateOne(
+    { _id: req.params.id, restaurantId: restaurant._id, status: 'new', releaseAt: { $gt: new Date() } }, { releaseAt: new Date() });
+  res.json({ ok: true });
 }));
 
 // Resized copies are small (10-40 KB) and cached in memory, so repeat requests skip Mongo and sharp.
@@ -372,7 +558,7 @@ router.post('/admin/upload-model', own, uploadModel.single('model'), wrap(async 
 
 // Plan, slug and features are read-only here: owners cannot change them.
 const tableLimitOf = (r) => { const f = featuresOf(r.plan); return f.ordering ? f.maxTables + r.extraTables : 0; };
-const adminSettings = (r) => ({ ...publicSettings(r), slug: r.slug, features: { ...featuresOf(r.plan), tableLimit: tableLimitOf(r) } });
+const adminSettings = (r) => ({ ...publicSettings(r), orderHoldSeconds: r.orderHoldSeconds ?? 120, customerCheckIn: Boolean(r.customerCheckIn), smsLive: smsIsLive(), slug: r.slug, features: { ...featuresOf(r.plan), tableLimit: tableLimitOf(r) } });
 
 router.get('/admin/settings', own, wrap(async (req, res) => {
   res.json(adminSettings(req.restaurant));
@@ -434,28 +620,124 @@ router.delete('/admin/tables/:id', ordering, wrap(async (req, res) => {
 // scope=done: the latest paid or cancelled orders; one settle gives all its orders the same paidAt.
 router.get('/admin/orders', ordering, wrap(async (req, res) => {
   const open = req.query.scope !== 'done';
+  // A cancellation by the guest stays on the open board until the kitchen acknowledges it, so it can't be missed.
+  // Orders still in their cancel hold are not shown to the kitchen yet.
   const filter = open
-    ? { paidAt: null, status: { $ne: 'cancelled' } }
+    ? { paidAt: null, $and: [released(), { $or: [{ status: { $ne: 'cancelled' } }, { cancelledBy: 'customer', cancelAckAt: null }] }] }
     : { $or: [{ paidAt: { $ne: null } }, { status: 'cancelled' }] };
   const orders = await Order.find({ restaurantId: req.restaurant._id, ...filter })
     .sort(open ? { createdAt: 1 } : { updatedAt: -1 }).limit(300).lean();
   res.json(orders.map((o) => ({ ...o, _id: String(o._id), tableId: o.tableId ? String(o.tableId) : null })));
 }));
 
+router.post('/admin/orders/:id/ack', ordering, wrap(async (req, res) => {
+  const order = await Order.findOneAndUpdate(
+    { _id: req.params.id, restaurantId: req.restaurant._id, status: 'cancelled', cancelAckAt: null }, { cancelAckAt: new Date() }, { new: true });
+  res.json({ ok: true, acknowledged: Boolean(order) });
+}));
+
 // Settles a table: every unpaid, non-cancelled order on it is marked paid and leaves the open list.
 router.post('/admin/tables/:id/settle', ordering, wrap(async (req, res) => {
-  const result = await Order.updateMany(
-    { restaurantId: req.restaurant._id, tableId: req.params.id, paidAt: null, status: { $ne: 'cancelled' } },
-    { paidAt: new Date() }
-  );
+  // An order the guest can still cancel isn't on the kitchen's list, so closing the table now would pay it unseen.
+  const waiting = await Order.findOne({ restaurantId: req.restaurant._id, tableId: req.params.id, paidAt: null, status: 'new', releaseAt: { $gt: new Date() } }).select('releaseAt');
+  if (waiting) {
+    const secs = Math.ceil((new Date(waiting.releaseAt).getTime() - Date.now()) / 1000);
+    return res.status(409).json({ error: `The guest just placed an order that reaches the kitchen in ${secs} seconds. Please close the table after that.` });
+  }
+  const filter = { restaurantId: req.restaurant._id, tableId: req.params.id, paidAt: null, status: { $ne: 'cancelled' } };
+  const paying = await Order.find(filter).lean();
+  const now = new Date();
+  const result = await Order.updateMany(filter, { paidAt: now });
+  // The guest's check-in ends with the bill, so the next people at this table check in themselves.
+  const sessions = await TableSession.find({ restaurantId: req.restaurant._id, tableId: req.params.id, endedAt: null }).lean();
+  await TableSession.updateMany({ _id: { $in: sessions.map((s) => s._id) } }, { endedAt: now });
+  if (paying.length) {
+    emit(req.restaurant._id, 'table.closed', {
+      table: paying[0].tableLabel, total: paying.reduce((n, o) => n + o.total, 0), paidAt: now,
+      customers: sessions.map((s) => ({ phone: s.phone, guests: s.guests })),
+      orders: paying.map((o) => ({ orderId: String(o._id), total: o.total })),
+    });
+  }
   res.json({ settled: result.modifiedCount });
+}));
+
+/* ---------- guests and webhook (Pro plan) ---------- */
+router.get('/admin/customers', ordering, wrap(async (req, res) => {
+  const list = await Customer.find({ restaurantId: req.restaurant._id }).sort({ lastVisitAt: -1 }).limit(2000).lean();
+  if (req.query.format === 'csv') {
+    const rows = [['Mobile number', 'Verified by SMS', 'Visits', 'Last visit', 'Last table', 'Guests (last visit)', 'First visit'],
+      ...list.map((c) => [c.phone, c.verified === false ? 'No' : 'Yes', c.visits, new Date(c.lastVisitAt).toISOString(), c.lastTable, c.lastGuests, new Date(c.firstVisitAt).toISOString()])];
+    res.set({ 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': 'attachment; filename="customers.csv"' });
+    return res.send(rows.map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\r\n'));
+  }
+  res.json(list.map((c) => ({ _id: String(c._id), phone: c.phone, verified: c.verified !== false, visits: c.visits, lastGuests: c.lastGuests, lastTable: c.lastTable, firstVisitAt: c.firstVisitAt, lastVisitAt: c.lastVisitAt })));
+}));
+
+const webhookOut = (r) => ({ enabled: Boolean(r.webhook?.enabled), url: r.webhook?.url || '', secret: r.webhook?.secret || '' });
+
+router.get('/admin/webhook', ordering, wrap(async (req, res) => {
+  res.json(webhookOut(req.restaurant));
+}));
+
+router.put('/admin/webhook', ordering, wrap(async (req, res) => {
+  const { enabled, url } = z.object({ enabled: z.boolean(), url: z.string().trim().max(500) }).parse(req.body);
+  if (enabled || url) {
+    const problem = checkWebhookUrl(url);
+    if (problem) return res.status(400).json({ error: problem });
+  }
+  req.restaurant.webhook = { enabled: enabled && Boolean(url), url, secret: req.restaurant.webhook?.secret || newSecret() };
+  await req.restaurant.save();
+  res.json(webhookOut(req.restaurant));
+}));
+
+router.post('/admin/webhook/secret', ordering, wrap(async (req, res) => {
+  req.restaurant.webhook = { ...webhookOut(req.restaurant), secret: newSecret() };
+  await req.restaurant.save();
+  res.json(webhookOut(req.restaurant));
+}));
+
+// Sends one test event right now, so the owner sees at once whether their address answers.
+router.post('/admin/webhook/test', ordering, wrap(async (req, res) => {
+  const hook = req.restaurant.webhook;
+  if (!hook?.url) return res.status(400).json({ error: 'Save a webhook address first.' });
+  const problem = checkWebhookUrl(hook.url);
+  if (problem) return res.status(400).json({ error: problem });
+  res.json(await sendTest(req.restaurant));
+}));
+
+router.get('/admin/webhook/events', ordering, wrap(async (req, res) => {
+  const events = await WebhookEvent.find({ restaurantId: req.restaurant._id }).sort({ createdAt: -1 }).limit(30).lean();
+  res.json(events.map((e) => ({ _id: String(e._id), type: e.type, status: e.status, attempts: e.attempts, lastStatus: e.lastStatus, lastError: e.lastError, createdAt: e.createdAt, sentAt: e.sentAt, nextAttemptAt: e.nextAttemptAt })));
+}));
+
+router.post('/admin/webhook/events/:id/retry', ordering, wrap(async (req, res) => {
+  if (!objectId.safeParse(req.params.id).success) return res.status(404).json({ error: 'Event not found' });
+  const ev = await retryEvent(req.restaurant._id, req.params.id);
+  if (!ev) return res.status(404).json({ error: 'Only failed events can be retried.' });
+  res.json({ ok: true });
 }));
 
 router.put('/admin/orders/:id', ordering, wrap(async (req, res) => {
   const { status } = z.object({ status: z.enum(ORDER_STATUSES) }).parse(req.body);
-  const order = await Order.findOneAndUpdate({ _id: req.params.id, restaurantId: req.restaurant._id }, { status }, { new: true });
-  if (!order) return res.status(404).json({ error: 'Order not found' });
-  res.json(order);
+  // Only forward moves are allowed, checked in the same update, so a cancelled order can't be started by a stale screen.
+  const from = { preparing: ['new'], served: ['preparing'], cancelled: ['new', 'preparing'], new: [] }[status];
+  const now = new Date();
+  const set = { status };
+  if (status === 'preparing') set.preparingAt = now;
+  if (status === 'cancelled') Object.assign(set, { cancelledBy: 'kitchen', cancelledAt: now, cancelAckAt: now });
+  const order = await Order.findOneAndUpdate(
+    { _id: req.params.id, restaurantId: req.restaurant._id, status: { $in: from } }, set, { new: true });
+  if (order) {
+    emit(req.restaurant._id, status === 'cancelled' ? 'order.cancelled' : 'order.status_changed', { ...orderData(order), ...(status === 'cancelled' ? { cancelledBy: 'kitchen' } : {}) });
+    return res.json(order);
+  }
+  const current = await Order.findOne({ _id: req.params.id, restaurantId: req.restaurant._id }).select('status cancelledBy');
+  if (!current) return res.status(404).json({ error: 'Order not found' });
+  res.status(409).json({
+    error: current.status === 'cancelled'
+      ? (current.cancelledBy === 'customer' ? 'The customer just cancelled this order.' : 'This order is already cancelled.')
+      : current.status === status ? `This order is already ${status}.` : `This order can't go from ${current.status} to ${status}.`,
+  });
 }));
 
 export default router;

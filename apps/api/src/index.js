@@ -5,6 +5,7 @@ import mongoose from 'mongoose';
 import { config } from './config.js';
 import routes from './routes.js';
 import { errorHandler } from './middleware.js';
+import { startWebhookWorker } from './webhooks.js';
 
 const app = express();
 app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
@@ -16,4 +17,5 @@ app.use('/api', routes);
 app.use(errorHandler);
 
 await mongoose.connect(config.mongoUri);
+startWebhookWorker();
 app.listen(config.port, () => console.log(`API ready on http://localhost:${config.port}`));

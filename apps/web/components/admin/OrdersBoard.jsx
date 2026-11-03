@@ -1,5 +1,5 @@
 'use client';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Badge, Box, Button, Flex, Heading, Stack, Text } from '@chakra-ui/react';
 import { api } from '@/lib/client';
 
@@ -17,7 +17,8 @@ function groupByTable(orders) {
   }
   return [...groups.values()].map((g) => {
     const billable = g.orders.filter((o) => o.status !== 'cancelled');
-    return { ...g, billable, total: billable.reduce((n, o) => n + o.total, 0), firstAt: g.orders[0].createdAt };
+    // The verified guest of the table, when the restaurant asks for check-in.
+    return { ...g, billable, guest: g.orders.find((o) => o.customerPhone), total: billable.reduce((n, o) => n + o.total, 0), firstAt: g.orders[0].createdAt };
   }).sort((a, b) => new Date(a.firstAt) - new Date(b.firstAt));
 }
 
@@ -72,7 +73,35 @@ function printBill(group, currency, restaurantName) {
   return true;
 }
 
-function OrderRound({ o, currency, onStatus }) {
+// A short two-tone alert when a guest cancels. Browsers only allow sound after the page has been touched once.
+function beep() {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    [660, 440].forEach((hz, i) => {
+      const osc = ctx.createOscillator(); const gain = ctx.createGain();
+      osc.frequency.value = hz; osc.connect(gain); gain.connect(ctx.destination);
+      const t = ctx.currentTime + i * 0.22;
+      gain.gain.setValueAtTime(0.0001, t); gain.gain.exponentialRampToValueAtTime(0.25, t + 0.02); gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.2);
+      osc.start(t); osc.stop(t + 0.22);
+    });
+    setTimeout(() => ctx.close(), 800);
+  } catch { /* no audio available */ }
+}
+
+function OrderRound({ o, currency, onStatus, onAck }) {
+  const guestCancelled = o.status === 'cancelled' && o.cancelledBy === 'customer';
+  if (guestCancelled) {
+    return (
+      <Box my={2} p="10px 12px" borderRadius="12px" border="1px solid" borderColor="danger" bg="rgba(226,89,78,.08)">
+        <Flex justify="space-between" align="center" gap={2} wrap="wrap">
+          <Text as="b" color="danger">Cancelled by the customer · do not prepare</Text>
+          <Text fontSize="14px" color="mute">Ordered at {time(o.createdAt)}</Text>
+        </Flex>
+        <Text fontSize="14px" mt={1} textDecoration="line-through" color="mute">{o.items.map((i) => `${i.qty} × ${i.name}`).join(', ')}</Text>
+        <Button size="sm" mt={2} onClick={() => onAck(o)}>Got it</Button>
+      </Box>
+    );
+  }
   return (
     <Box py={2} borderTop="1px dashed" borderColor="line">
       <Flex justify="space-between" align="center" gap={2} wrap="wrap">
@@ -100,7 +129,13 @@ export default function OrdersBoard({ currency, restaurantName }) {
   const [orders, setOrders] = useState([]);
   const [err, setErr] = useState('');
 
+  const alerted = useRef(null); // ids of guest cancellations already announced; null until the first load
   const load = useCallback(() => api(`/admin/orders?scope=${scope}`).then((list) => {
+    if (scope === 'open') {
+      const pending = list.filter((o) => o.status === 'cancelled' && o.cancelledBy === 'customer' && !o.cancelAckAt).map((o) => o._id);
+      if (alerted.current && pending.some((id) => !alerted.current.has(id))) beep();
+      alerted.current = new Set(pending);
+    }
     setOrders(list); setErr('');
   }).catch((e) => setErr(e.message)), [scope]);
 
@@ -115,6 +150,10 @@ export default function OrdersBoard({ currency, restaurantName }) {
 
   async function setStatus(o, status) {
     try { await api(`/admin/orders/${o._id}`, { method: 'PUT', body: { status } }); load(); } catch (e) { setErr(e.message); }
+  }
+
+  async function acknowledge(o) {
+    try { await api(`/admin/orders/${o._id}/ack`, { method: 'POST' }); load(); } catch (e) { setErr(e.message); }
   }
 
   async function settle(g) {
@@ -144,7 +183,13 @@ export default function OrdersBoard({ currency, restaurantName }) {
                 <Text as="b" fontSize="20px">{g.label}</Text>
                 <Text color="mute" fontSize="14px">{g.orders.length} order{g.orders.length > 1 ? 's' : ''} · since {time(g.firstAt)}</Text>
               </Flex>
-              {g.orders.map((o) => <OrderRound key={o._id} o={o} currency={currency} onStatus={setStatus} />)}
+              {g.guest && (
+                <Text fontSize="14px" mb={1}>
+                  {g.guest.customerPhone}
+                  <Text as="span" color="mute"> · {g.guest.guests} {g.guest.guests === 1 ? 'person' : 'people'} seated</Text>
+                </Text>
+              )}
+              {g.orders.map((o) => <OrderRound key={o._id} o={o} currency={currency} onStatus={setStatus} onAck={acknowledge} />)}
               <Flex justify="space-between" align="center" gap={2} wrap="wrap" pt={3} borderTop="2px solid" borderColor="line">
                 <Text as="b" fontSize="20px">Total {currency}{g.total}</Text>
                 <Flex gap={2} wrap="wrap">

@@ -55,6 +55,14 @@ async function buildPhotoModel(dish) {
   return new Blob([glb], { type: 'model/gltf-binary' });
 }
 
+function webglAvailable() {
+  try {
+    const gl = document.createElement('canvas').getContext('webgl2') || document.createElement('canvas').getContext('webgl');
+    gl?.getExtension('WEBGL_lose_context')?.loseContext(); // hand the context straight back
+    return Boolean(gl);
+  } catch { return false; }
+}
+
 /**
  * "View on your table" button. The model is prepared in the background so the tap itself can open AR
  * straight away (phones only allow that from a direct tap):
@@ -78,6 +86,9 @@ export default function ArButton({ dish }) {
         if (dish.modelId) src = `${location.origin}${imgUrl(dish.modelId)}`;
         else blobUrl = URL.createObjectURL(await buildPhotoModel(dish));
         if (dead) return;
+        // model-viewer's constructor throws (and the browser reports it, which shows Next's error overlay) when no WebGL
+        // context can be created, for example with hardware acceleration off or too many contexts open. Check first.
+        if (!webglAvailable()) { setState('unsupported'); return; }
         const mv = document.createElement('model-viewer');
         mv.setAttribute('src', src || blobUrl);
         mv.setAttribute('alt', dish.name);

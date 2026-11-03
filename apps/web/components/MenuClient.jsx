@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Box, Flex, Heading, SimpleGrid, Text } from '@chakra-ui/react';
 import { motion, useReducedMotion } from 'framer-motion';
+import CheckIn from './CheckIn';
 import DishModal from './DishModal';
 import OrderPanel from './OrderPanel';
 import CategoryNav from './menu/CategoryNav';
@@ -25,6 +26,27 @@ export default function MenuClient({ menu, tableToken }) {
   const [open, setOpen] = useState(null);
   const close = useCallback(() => setOpen(null), []);
   const jumping = useRef(0);
+
+  // Restaurants that ask for check-in: the guest verifies a mobile number first. The check-in is remembered on this phone
+  // until the table's bill is paid, which ends it on the server.
+  const checkInOn = canOrder && Boolean(menu.features?.checkIn);
+  const sessionKey = `menu3d_guest_${menu.slug}_${tableToken}`;
+  const [guest, setGuest] = useState(null); // { token, guests, phone }
+  const [checking, setChecking] = useState(checkInOn);
+  useEffect(() => {
+    if (!checkInOn) { setChecking(false); return undefined; }
+    let stored = null;
+    try { stored = JSON.parse(localStorage.getItem(sessionKey)); } catch { /* storage unavailable */ }
+    if (!stored?.token) { setChecking(false); return undefined; }
+    let live = true;
+    fetch(`/api/r/${menu.slug}/checkin/session`, { headers: { 'x-guest-token': stored.token } })
+      .then((r) => { if (!live) return; if (r.ok) setGuest(stored); else { try { localStorage.removeItem(sessionKey); } catch { /* ignore */ } } })
+      .catch(() => { if (live) setGuest(stored); }) // offline: trust it, the server checks again when ordering
+      .finally(() => { if (live) setChecking(false); });
+    return () => { live = false; };
+  }, [checkInOn, sessionKey, menu.slug]);
+  const checkedIn = (g) => { try { localStorage.setItem(sessionKey, JSON.stringify(g)); } catch { /* ignore */ } setGuest(g); };
+  const checkInEnded = useCallback(() => { try { localStorage.removeItem(sessionKey); } catch { /* ignore */ } setGuest(null); }, [sessionKey]);
 
   // The menu has its own look, whatever the visitor's system theme: paint the whole page, including overscroll.
   useEffect(() => {
@@ -147,7 +169,16 @@ export default function MenuClient({ menu, tableToken }) {
         <Text mt={2} fontFamily={FONT.display} fontStyle="italic" fontSize="19px" color={C.mute}>Thank you for dining with us</Text>
       </Box>
 
-      {canOrder && <OrderPanel slug={menu.slug} tableToken={tableToken} tableLabel={menu.table.label} dishes={dishes} cart={cart} setCart={setCart} currency={settings.currency} />}
+      {canOrder && (
+        <OrderPanel
+          slug={menu.slug} tableToken={tableToken} tableLabel={menu.table.label} dishes={dishes} cart={cart} setCart={setCart} currency={settings.currency}
+          sessionToken={guest?.token} onSessionEnded={checkInEnded}
+        />
+      )}
+      {checkInOn && checking && <Box position="fixed" inset={0} zIndex={60} bg={C.bg} aria-hidden="true" />}
+      {checkInOn && !checking && !guest && (
+        <CheckIn slug={menu.slug} tableToken={tableToken} tableLabel={menu.table.label} restaurantName={settings.name} onDone={checkedIn} />
+      )}
       {open && (
         <DishModal
           dish={open} currency={settings.currency} onClose={close} ar={ar} orderHint={Boolean(menu.features?.ordering) && !canOrder}

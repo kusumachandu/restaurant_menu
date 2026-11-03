@@ -15,6 +15,16 @@ export const Restaurant = model(
       plan: { type: String, enum: PLAN_NAMES, default: 'starter' },
       extraTables: { type: Number, default: 0, min: 0 }, // paid tables beyond the plan's, set by the super admin
       active: { type: Boolean, default: true },
+      // How long a new order is held back from the kitchen so the guest can still cancel it; 0 sends orders straight away.
+      orderHoldSeconds: { type: Number, default: 120, min: 0, max: 300 },
+      // When on, a guest must verify their mobile number (and say how many people are seated) before ordering.
+      customerCheckIn: { type: Boolean, default: false },
+      // Where this restaurant wants its events sent (check-ins, orders, ...). The secret signs every request.
+      webhook: {
+        enabled: { type: Boolean, default: false },
+        url: { type: String, default: '' },
+        secret: { type: String, default: '' },
+      },
     },
     { timestamps: true }
   )
@@ -102,7 +112,85 @@ export const Order = model(
       total: { type: Number, required: true },
       status: { type: String, enum: ORDER_STATUSES, default: 'new' },
       paidAt: { type: Date, default: null }, // set when the table's bill is settled
+      releaseAt: { type: Date, default: null }, // the kitchen sees the order from this time; until then the guest can cancel it
+      preparingAt: { type: Date, default: null }, // when the kitchen started
+      cancelledAt: { type: Date, default: null },
+      cancelledBy: { type: String, enum: ['customer', 'kitchen', null], default: null },
+      cancelAckAt: { type: Date, default: null }, // kitchen has seen a customer's cancellation
+      sessionId: { type: Schema.Types.ObjectId, ref: 'TableSession', default: null }, // set when the restaurant asks guests to check in
+      customerPhone: { type: String, default: null }, // the verified number the order is linked to
+      guests: { type: Number, default: null }, // people seated at the table, from the check-in
     },
     { timestamps: true }
   )
+);
+
+// A guest who verified their mobile number at a table. It lasts until the table is settled (paid), then a new guest checks in.
+export const TableSession = model(
+  'TableSession',
+  new Schema(
+    {
+      restaurantId: { type: Schema.Types.ObjectId, ref: 'Restaurant', required: true, index: true },
+      tableId: { type: Schema.Types.ObjectId, ref: 'Table', required: true },
+      tableLabel: { type: String, required: true },
+      phone: { type: String, required: true }, // verified, +91XXXXXXXXXX
+      guests: { type: Number, required: true, min: 1, max: 50 },
+      otherPhones: { type: [String], default: [] }, // optional numbers of the other people at the table, not verified
+      endedAt: { type: Date, default: null },
+    },
+    { timestamps: true }
+  )
+);
+
+// One per phone number per restaurant: the guest list the restaurant can export.
+export const Customer = model(
+  'Customer',
+  new Schema(
+    {
+      restaurantId: { type: Schema.Types.ObjectId, ref: 'Restaurant', required: true },
+      phone: { type: String, required: true },
+      visits: { type: Number, default: 0 },
+      lastGuests: { type: Number, default: 1 },
+      lastTable: { type: String, default: '' },
+      verified: { type: Boolean, default: true }, // false for a number someone else at the table gave; it was not checked by SMS
+      firstVisitAt: { type: Date, default: Date.now },
+      lastVisitAt: { type: Date, default: Date.now },
+    },
+    { timestamps: true }
+  ).index({ restaurantId: 1, phone: 1 }, { unique: true })
+);
+
+// A pending one-time code. Only a hash of the code is kept, and the record deletes itself shortly after it expires.
+export const OtpCode = model(
+  'OtpCode',
+  new Schema(
+    {
+      restaurantId: { type: Schema.Types.ObjectId, required: true },
+      phone: { type: String, required: true },
+      codeHash: { type: String, required: true },
+      attempts: { type: Number, default: 0 },
+      expiresAt: { type: Date, required: true, index: { expires: 600 } }, // removed 10 minutes after expiry
+    },
+    { timestamps: true }
+  ).index({ restaurantId: 1, phone: 1 })
+);
+
+// Events waiting to be sent to a restaurant's webhook. Saved first and sent by a background loop, so a slow or down
+// receiver never holds up a guest, and nothing is lost if the API restarts.
+export const WebhookEvent = model(
+  'WebhookEvent',
+  new Schema(
+    {
+      restaurantId: { type: Schema.Types.ObjectId, required: true, index: true },
+      type: { type: String, required: true },
+      payload: { type: Schema.Types.Mixed, required: true },
+      status: { type: String, enum: ['pending', 'sent', 'failed'], default: 'pending' },
+      attempts: { type: Number, default: 0 },
+      nextAttemptAt: { type: Date, default: Date.now },
+      lastStatus: { type: Number, default: null }, // HTTP status of the last try
+      lastError: { type: String, default: '' },
+      sentAt: { type: Date, default: null },
+    },
+    { timestamps: true }
+  ).index({ status: 1, nextAttemptAt: 1 })
 );
