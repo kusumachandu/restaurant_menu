@@ -10,6 +10,7 @@ import crypto from 'node:crypto';
 import { Admin, Customer, Dish, Image, ORDER_STATUSES, Order, OtpCode, Restaurant, Table, TableSession, WebhookEvent } from './models.js';
 import { sendOtp, smsIsLive } from './sms.js';
 import { checkWebhookUrl, emit, newSecret, retryEvent, sendTest } from './webhooks.js';
+import { platformStats, recentSales, restaurantStats } from './analytics.js';
 import { requireAuth, requireOwner, requireSuper, wrap } from './middleware.js';
 import { PLAN_NAMES, featuresOf } from './plans.js';
 import { makeCutout } from './cutout.js';
@@ -406,11 +407,12 @@ router.post('/auth/login', loginLimiter, wrap(async (req, res) => {
 const sup = [requireAuth, requireSuper];
 
 router.get('/super/restaurants', sup, wrap(async (req, res) => {
-  const [restaurants, counts, tables, owners] = await Promise.all([
+  const [restaurants, counts, tables, owners, sales] = await Promise.all([
     Restaurant.find().sort({ createdAt: -1 }).lean(),
     Dish.aggregate([{ $group: { _id: '$restaurantId', n: { $sum: 1 } } }]),
     Table.aggregate([{ $group: { _id: '$restaurantId', n: { $sum: 1 } } }]),
     Admin.find({ role: 'owner' }).select('email restaurantId').lean(),
+    recentSales(30),
   ]);
   const tableCount = new Map(tables.map((c) => [String(c._id), c.n]));
   const dishCount = new Map(counts.map((c) => [String(c._id), c.n]));
@@ -420,8 +422,15 @@ router.get('/super/restaurants', sup, wrap(async (req, res) => {
     restaurants: restaurants.map((r) => ({
       _id: String(r._id), slug: r.slug, name: r.name, plan: r.plan, active: r.active, extraTables: r.extraTables,
       tableCount: tableCount.get(String(r._id)) || 0, dishCount: dishCount.get(String(r._id)) || 0, ownerEmail: ownerEmail.get(String(r._id)) || '',
+      orders30: sales.get(String(r._id))?.orders || 0, revenue30: sales.get(String(r._id))?.revenue || 0,
     })),
   });
+}));
+
+// Numbers for the whole platform. ?range=today|yesterday|7d|30d|90d|custom&from=YYYY-MM-DD&to=YYYY-MM-DD
+router.get('/super/analytics', sup, wrap(async (req, res) => {
+  res.set('Cache-Control', 'private, max-age=15');
+  res.json(await platformStats(req.query));
 }));
 
 router.post('/super/restaurants', sup, wrap(async (req, res) => {
@@ -472,6 +481,12 @@ router.post('/super/restaurants/:id/reset-password', sup, wrap(async (req, res) 
 
 /* ---------- restaurant owner ---------- */
 const own = [requireAuth, requireOwner];
+
+// Numbers for this restaurant's dashboard, same ?range=… as above.
+router.get('/admin/analytics', own, wrap(async (req, res) => {
+  res.set('Cache-Control', 'private, max-age=15');
+  res.json({ currency: req.restaurant.currency, ordering: req.features.ordering, checkIn: req.restaurant.customerCheckIn, ...(await restaurantStats(req.restaurant._id, req.query)) });
+}));
 
 router.get('/admin/dishes', own, wrap(async (req, res) => {
   const dishes = await Dish.find({ restaurantId: req.restaurant._id }).sort({ category: 1, sortOrder: 1, name: 1 }).lean();

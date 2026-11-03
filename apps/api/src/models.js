@@ -122,7 +122,7 @@ export const Order = model(
       guests: { type: Number, default: null }, // people seated at the table, from the check-in
     },
     { timestamps: true }
-  )
+  ).index({ restaurantId: 1, createdAt: -1 }).index({ createdAt: -1 }) // the dashboards read orders by date range (per restaurant, and platform-wide)
 );
 
 // A guest who verified their mobile number at a table. It lasts until the table is settled (paid), then a new guest checks in.
@@ -139,7 +139,7 @@ export const TableSession = model(
       endedAt: { type: Date, default: null },
     },
     { timestamps: true }
-  )
+  ).index({ restaurantId: 1, createdAt: -1 }).index({ createdAt: -1 })
 );
 
 // One per phone number per restaurant: the guest list the restaurant can export.
@@ -157,7 +157,7 @@ export const Customer = model(
       lastVisitAt: { type: Date, default: Date.now },
     },
     { timestamps: true }
-  ).index({ restaurantId: 1, phone: 1 }, { unique: true })
+  ).index({ restaurantId: 1, phone: 1 }, { unique: true }).index({ restaurantId: 1, firstVisitAt: -1 }).index({ restaurantId: 1, lastVisitAt: -1 }).index({ firstVisitAt: -1 })
 );
 
 // A pending one-time code. Only a hash of the code is kept, and the record deletes itself shortly after it expires.
